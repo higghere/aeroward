@@ -1,0 +1,44 @@
+{
+  "name": "aeroward",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AeroWard - Predictive Air Quality Intelligence, Environmental Analysis & Proactive Pollution Mitigation",
+  "scripts": {
+    "dev": "concurrently -k -p \"[{name}]\" -n \"BACKEND,FRONTEND\" -c \"cyan.bold,green.bold\" \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:frontend": "next dev -p 3000",
+    "dev:backend": "tsx watch backend/src/server.ts",
+    "build:frontend": "next build",
+    "build:backend": "tsc -p backend/tsconfig.json",
+    "build": "next build",
+    "start:frontend": "next start -p 3000",
+    "start:backend": "node backend/dist/server.js",
+    "start": "concurrently -k -p \"[{name}]\" -n \"BACKEND,FRONTEND\" -c \"cyan.bold,green.bold\" \"npm run start:backend\" \"npm run start:frontend\"",
+    "test": "node --import tsx --test backend/src/tests/**/*.test.ts"
+  },
+  "dependencies": {
+    "@fastify/cors": "^9.0.1",
+    "@fastify/sensible": "^5.6.0",
+    "dotenv": "^16.4.7",
+    "fastify": "^4.28.1",
+    "framer-motion": "^11.15.0",
+    "gsap": "^3.12.5",
+    "lucide-react": "^0.468.0",
+    "maplibre-gl": "^4.7.1",
+    "next": "^14.2.23",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.15.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.10",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^9.1.0",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

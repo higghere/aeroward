@@ -1,0 +1,162 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Core surfaces */
+  --background: #101110;
+  --foreground: #eeeee8;
+  --surface: #181a18;
+  --surface-elevated: #202320;
+  --surface-muted: #252825;
+
+  /* Text */
+  --text-primary: #eeeee8;
+  --text-secondary: #a4a79f;
+  --text-muted: #777c74;
+
+  /* Borders */
+  --border: #343832;
+  --border-subtle: #292d29;
+  --border-strong: #4b514a;
+
+  /* Brand */
+  --accent: #c76b45;
+  --accent-hover: #dc8057;
+  --accent-foreground: #ffffff;
+
+  /* Pollution severity */
+  --pollution-low: #86a98a;
+  --pollution-moderate: #c2b06c;
+  --pollution-high: #d58a50;
+  --pollution-severe: #b95342;
+
+  /* Environmental data */
+  --data-weather: #82b8c5;
+  --data-improvement: #86a98a;
+  --data-neutral: #a4a79f;
+
+  /* Semantic states */
+  --success: #86a98a;
+  --warning: #d6ad62;
+  --danger: #c76b5d;
+  --info: #82b8c5;
+  --focus-ring: #82b8c5;
+
+  /* Typography */
+  --font-body: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-display: Georgia, "Times New Roman", serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+
+  /* Radius */
+  --radius-small: 4px;
+  --radius-medium: 8px;
+  --radius-large: 12px;
+
+  /* Borders and shadows */
+  --border-width: 1px;
+  --shadow-elevation: 0 12px 32px rgb(0 0 0 / 28%);
+
+  /* Layout */
+  --header-height: 68px;
+  --content-max-width: 1440px;
+
+  /* Motion */
+  --motion-fast: 140ms;
+  --motion-standard: 240ms;
+  --motion-slow: 420ms;
+
+  /* Spacing */
+  --section-spacing: 6rem;
+  --panel-spacing: 1.25rem;
+}
+
+/* Base resets & typography */
+html {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-body);
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  min-height: 100vh;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--surface);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: var(--radius-small);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+}
+
+/* Subtle scientific grid patterns */
+.bg-grid-pattern {
+  background-image: 
+    linear-gradient(to right, rgba(52, 56, 50, 0.25) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(52, 56, 50, 0.25) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+.bg-dot-pattern {
+  background-image: radial-gradient(rgba(164, 167, 159, 0.15) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* MapLibre controls dark override */
+.maplibregl-ctrl-group {
+  background: var(--surface-elevated) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-medium) !important;
+}
+.maplibregl-ctrl-group button {
+  border-bottom: 1px solid var(--border-subtle) !important;
+}
+.maplibregl-ctrl-group button:last-child {
+  border-bottom: none !important;
+}
+.maplibregl-ctrl-icon {
+  filter: invert(0.85);
+}
+.maplibregl-popup-content {
+  background: var(--surface-elevated) !important;
+  color: var(--foreground) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-medium) !important;
+  box-shadow: var(--shadow-elevation) !important;
+  padding: 12px 16px !important;
+}
+.maplibregl-popup-anchor-top .maplibregl-popup-tip {
+  border-bottom-color: var(--surface-elevated) !important;
+}
+.maplibregl-popup-anchor-bottom .maplibregl-popup-tip {
+  border-top-color: var(--surface-elevated) !important;
+}
+.maplibregl-popup-anchor-left .maplibregl-popup-tip {
+  border-right-color: var(--surface-elevated) !important;
+}
+.maplibregl-popup-anchor-right .maplibregl-popup-tip {
+  border-left-color: var(--surface-elevated) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
