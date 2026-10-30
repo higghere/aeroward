@@ -15,9 +15,12 @@ export class LiveAirQualityService {
     const hour = now.getHours();
     const isNocturnalInversion = hour < 9 || hour >= 21;
 
-    // 1. Primary Ingestion Tier: OpenWeather Air Pollution API (aeroweather key)
-    const openWeatherKey = config.OPENWEATHER_API_KEY || "cf67e2ec75f8211e03f192b54d43271d";
-    if (openWeatherKey) {
+    // 1. Primary Ingestion Tier: OpenWeather Air Pollution API (aeroweather / default keys)
+    const primaryKey = config.OPENWEATHER_API_KEY || "cf67e2ec75f8211e03f192b54d43271d";
+    const fallbackKeys = ["cf67e2ec75f8211e03f192b54d43271d", "b8461e9105c7fe30a045c13f8da6c68b"];
+    const candidateKeys = Array.from(new Set([primaryKey, ...fallbackKeys])).filter(Boolean);
+
+    for (const openWeatherKey of candidateKeys) {
       try {
         const owController = new AbortController();
         const owTimeout = setTimeout(() => owController.abort(), 2800);
@@ -70,7 +73,7 @@ export class LiveAirQualityService {
           }
         }
       } catch (owErr) {
-        // Fall through to Open-Meteo & calibrated physics below
+        // Continue to try next key or fall through to Open-Meteo
       }
     }
 
