@@ -17,6 +17,7 @@ const envSchema = z.object({
   ECMWF_API_KEY: z.string().optional().default(""),
   GOOGLE_MAPS_API_KEY: z.string().optional().default(process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || "AIzaSyBO9KDwxmwwvtYTFkbswzQEi57uA-bZ69I"),
   OPENWEATHER_API_KEY: z.string().optional().default(process.env.OPENWEATHER_API_KEY || process.env.NEXT_PUBLIC_OPENWEATHER_API_KEY || "cf67e2ec75f8211e03f192b54d43271d"),
+  AQICN_API_TOKEN: z.string().optional().default(process.env.AQICN_API_TOKEN || process.env.NEXT_PUBLIC_AQICN_API_TOKEN || "ea9b52444d4cbb7716ee640b9ba30fef80cd9f2e"),
 });
 
 export const config = envSchema.parse(process.env);
