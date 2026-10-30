@@ -86,3 +86,30 @@ export function calculateAQI(pollutants: {
     dominantPollutant: maxSub.pollutant,
   };
 }
+
+export function calculateUSAQI(pm25: number): { usAqi: number; usCategory: string } {
+  // US EPA PM2.5 Standard Breakpoints
+  let aqi = 0;
+  if (pm25 <= 12.0) {
+    aqi = Math.round((50 / 12.0) * pm25);
+  } else if (pm25 <= 35.4) {
+    aqi = Math.round(51 + ((100 - 51) / (35.4 - 12.1)) * (pm25 - 12.1));
+  } else if (pm25 <= 55.4) {
+    aqi = Math.round(101 + ((150 - 101) / (55.4 - 35.5)) * (pm25 - 35.5));
+  } else if (pm25 <= 150.4) {
+    aqi = Math.round(151 + ((200 - 151) / (150.4 - 55.5)) * (pm25 - 55.5));
+  } else if (pm25 <= 250.4) {
+    aqi = Math.round(201 + ((300 - 201) / (250.4 - 150.5)) * (pm25 - 150.5));
+  } else {
+    aqi = Math.round(301 + ((500 - 301) / (500.4 - 250.5)) * (Math.min(500, pm25) - 250.5));
+  }
+
+  let usCategory = "Good";
+  if (aqi > 300) usCategory = "Hazardous";
+  else if (aqi > 200) usCategory = "Very Unhealthy";
+  else if (aqi > 150) usCategory = "Unhealthy";
+  else if (aqi > 100) usCategory = "Unhealthy for Sensitive Groups";
+  else if (aqi > 50) usCategory = "Moderate";
+
+  return { usAqi: aqi, usCategory };
+}

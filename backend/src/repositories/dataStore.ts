@@ -26,6 +26,8 @@ export interface Observation {
   o3: number;
   aqi: number;
   category: string;
+  us_aqi?: number;
+  us_category?: string;
   dominantPollutant: string;
   dataQuality: "validated" | "raw" | "flagged" | "synthetic";
   meteorology: {

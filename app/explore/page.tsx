@@ -357,8 +357,15 @@ export default function ExplorePage() {
                 <div style={{ color }} className="font-display text-4xl font-bold">
                   {metric.val} <span className="text-xs font-mono text-text-muted">{metric.unit}</span>
                 </div>
-                <div className="mt-1 inline-block rounded px-2 py-0.5 text-[11px] font-sans font-semibold" style={{ backgroundColor: `${color}25`, color }}>
-                  {selectedObs?.category || "Unknown"} Risk Tier
+                <div className="mt-1 flex items-center justify-end gap-1.5 flex-wrap">
+                  <span className="inline-block rounded px-2 py-0.5 text-[11px] font-sans font-semibold" style={{ backgroundColor: `${color}25`, color }}>
+                    {selectedObs?.category || "Unknown"} Risk Tier (NAQI)
+                  </span>
+                  {selectedObs?.us_aqi && (
+                    <span className="inline-block rounded border border-border-subtle bg-surface px-2 py-0.5 text-[11px] font-mono text-text-secondary" title="US EPA Air Quality Index Standard (as shown on AQI.in / international apps)">
+                      {selectedObs.us_aqi} AQI (US)
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
