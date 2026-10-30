@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { 
   Clock, 
   MapPin, 
@@ -23,21 +23,62 @@ import {
   CartesianGrid, 
   ReferenceLine 
 } from "recharts";
-import { STATIONS } from "@/backend/src/repositories/dataStore";
+import { STATIONS, Station } from "@/backend/src/repositories/dataStore";
 import { observationRepository } from "@/backend/src/repositories/observationRepository";
 import { getPollutionColor } from "@/lib/theme";
 
 export default function HistoryPage() {
+  const [stations, setStations] = useState<Station[]>(STATIONS);
   const [selectedStationId, setSelectedStationId] = useState("kanpur_nehru");
   const [selectedDays, setSelectedDays] = useState<number>(30);
   const [selectedPollutant, setSelectedPollutant] = useState<"PM2.5" | "PM10" | "NO2" | "AQI">("PM2.5");
   const [activeEventFilter, setActiveEventFilter] = useState<string | null>(null);
 
-  const selectedStation = STATIONS.find((s) => s.id === selectedStationId) || STATIONS[0];
+  // Sync custom added stations from localStorage and backend registry
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("aeroward_custom_stations");
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setStations((prev) => [...parsed, ...prev.filter((p) => !parsed.some((x: any) => x.id === p.id))]);
+        }
+      }
+    } catch (e) {}
+
+    fetch("/api/v1/stations")
+      .then((r) => r.json())
+      .then((data) => {
+        if (data && data.stations && data.stations.length > 0) {
+          setStations(data.stations);
+        }
+      })
+      .catch((err) => console.warn("Notice: Live station sync in history:", err));
+
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const urlId = params.get("stationId");
+      if (urlId) {
+        setSelectedStationId(urlId);
+      } else {
+        const lastSelected = localStorage.getItem("aeroward_selected_station_id");
+        if (lastSelected) setSelectedStationId(lastSelected);
+      }
+    }
+  }, []);
+
+  const handleStationChange = (id: string) => {
+    setSelectedStationId(id);
+    try {
+      localStorage.setItem("aeroward_selected_station_id", id);
+    } catch (e) {}
+  };
+
+  const selectedStation = stations.find((s) => s.id === selectedStationId) || stations[0];
 
   const historicalRecords = useMemo(() => {
-    return observationRepository.getHistorical(selectedStationId, selectedDays);
-  }, [selectedStationId, selectedDays]);
+    return observationRepository.getHistorical(selectedStationId, selectedDays, selectedStation);
+  }, [selectedStationId, selectedDays, selectedStation]);
 
   const chartData = useMemo(() => {
     return historicalRecords.map((rec) => {
@@ -117,10 +158,10 @@ export default function HistoryPage() {
           <MapPin className="h-4 w-4 text-accent" />
           <select
             value={selectedStationId}
-            onChange={(e) => setSelectedStationId(e.target.value)}
+            onChange={(e) => handleStationChange(e.target.value)}
             className="rounded-sm border border-border bg-surface-elevated px-3 py-1.5 font-sans text-xs text-text-primary focus:border-accent focus:outline-none"
           >
-            {STATIONS.map((s) => (
+            {stations.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name} ({s.city})
               </option>

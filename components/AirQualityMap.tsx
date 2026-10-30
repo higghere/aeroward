@@ -291,6 +291,9 @@ export default function AirQualityMap({
 
       el.addEventListener("click", () => {
         onSelectStation(station.id);
+        try {
+          localStorage.setItem("aeroward_selected_station_id", station.id);
+        } catch (e) {}
       });
 
       const marker = new maplibregl.Marker({ element: el })

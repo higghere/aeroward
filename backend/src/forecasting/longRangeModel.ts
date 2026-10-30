@@ -1,4 +1,4 @@
-import { STATIONS } from "../repositories/dataStore.js";
+import { STATIONS, Station } from "../repositories/dataStore.js";
 
 export interface TrailingHistoricalMonth {
   monthName: string;
@@ -81,9 +81,10 @@ const MONTH_NAMES = [
 export function generateLongRangeForecast(
   stationId: string,
   pollutant: string = "PM2.5",
-  horizonMonths: number = 7
+  horizonMonths: number = 7,
+  customStation?: Station
 ): LongRangeForecastResult {
-  const station = STATIONS.find((s) => s.id === stationId) || STATIONS[0];
+  const station = customStation || STATIONS.find((s) => s.id === stationId) || STATIONS[0];
   const now = new Date();
   const currentMonth = now.getMonth();
   const currentYear = now.getFullYear();

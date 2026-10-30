@@ -54,10 +54,11 @@ function computeAdvectionWeight(from: Station, to: Station, windDirDeg: number, 
 export function generateShortTermForecast(
   stationId: string,
   pollutant: string = "PM2.5",
-  horizon: "12h" | "24h" | "48h" | "72h" = "72h"
+  horizon: "12h" | "24h" | "48h" | "72h" = "72h",
+  customStation?: Station
 ): ShortTermForecastResult {
-  const station = STATIONS.find((s) => s.id === stationId) || STATIONS[0];
-  const currentObs = observationRepository.getCurrentByStation(station.id);
+  const station = customStation || STATIONS.find((s) => s.id === stationId) || STATIONS[0];
+  const currentObs = observationRepository.getCurrentByStation(station.id, station);
   const now = new Date();
 
   const totalHours = horizon === "12h" ? 12 : horizon === "24h" ? 24 : horizon === "48h" ? 48 : 72;

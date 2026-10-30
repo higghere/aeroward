@@ -82,8 +82,15 @@ export default function ExplorePage() {
     const immediateObs = observationRepository.getCurrentByStation(newStation.id, newStation);
     setObservations((prev) => [immediateObs, ...prev.filter((o) => o.stationId !== newStation.id)]);
 
-    // 3. Select it immediately to fly MapLibre
+    // 3. Select it immediately to fly MapLibre and store active selection
     setSelectedStationId(newStation.id);
+    try {
+      const stored = localStorage.getItem("aeroward_custom_stations");
+      const list = stored ? JSON.parse(stored) : [];
+      const updated = [newStation, ...list.filter((x: any) => x.id !== newStation.id)];
+      localStorage.setItem("aeroward_custom_stations", JSON.stringify(updated));
+      localStorage.setItem("aeroward_selected_station_id", newStation.id);
+    } catch (e) {}
 
     // 4. Send to backend Fastify server to persist and get live calibrated API telemetry
     try {
@@ -255,7 +262,12 @@ export default function ExplorePage() {
                 return (
                   <button
                     key={st.id}
-                    onClick={() => setSelectedStationId(st.id)}
+                    onClick={() => {
+                      setSelectedStationId(st.id);
+                      try {
+                        localStorage.setItem("aeroward_selected_station_id", st.id);
+                      } catch (e) {}
+                    }}
                     className={`flex w-full items-center justify-between rounded-sm p-2 text-left transition-colors ${
                       isSelected
                         ? "bg-surface-elevated border-l-2 border-accent"

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { 
   TrendingUp, 
   AlertCircle, 
@@ -26,7 +26,7 @@ import {
   CartesianGrid, 
   ReferenceLine 
 } from "recharts";
-import { STATIONS } from "@/backend/src/repositories/dataStore";
+import { STATIONS, Station } from "@/backend/src/repositories/dataStore";
 import { generateShortTermForecast } from "@/backend/src/forecasting/shortTermModel";
 import { generateLongRangeForecast } from "@/backend/src/forecasting/longRangeModel";
 import { getPollutionColor } from "@/lib/theme";
@@ -35,18 +35,59 @@ const SHORT_HORIZONS = ["12h", "24h", "48h", "72h"] as const;
 const LONG_HORIZONS = ["1m", "2m", "3m", "4m", "5m", "6m", "7m"] as const;
 
 export default function ForecastPage() {
+  const [stations, setStations] = useState<Station[]>(STATIONS);
   const [selectedStationId, setSelectedStationId] = useState("kanpur_nehru");
   const [selectedPollutant, setSelectedPollutant] = useState("PM2.5");
   const [forecastType, setForecastType] = useState<"short" | "long">("short");
   const [shortHorizon, setShortHorizon] = useState<"12h" | "24h" | "48h" | "72h">("72h");
   const [longHorizon, setLongHorizon] = useState<"1m" | "2m" | "3m" | "4m" | "5m" | "6m" | "7m">("7m");
 
-  const selectedStation = STATIONS.find((s) => s.id === selectedStationId) || STATIONS[0];
+  // Sync custom added stations from localStorage and backend registry
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("aeroward_custom_stations");
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setStations((prev) => [...parsed, ...prev.filter((p) => !parsed.some((x: any) => x.id === p.id))]);
+        }
+      }
+    } catch (e) {}
+
+    fetch("/api/v1/stations")
+      .then((r) => r.json())
+      .then((data) => {
+        if (data && data.stations && data.stations.length > 0) {
+          setStations(data.stations);
+        }
+      })
+      .catch((err) => console.warn("Notice: Live station sync in forecast:", err));
+
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const urlId = params.get("stationId");
+      if (urlId) {
+        setSelectedStationId(urlId);
+      } else {
+        const lastSelected = localStorage.getItem("aeroward_selected_station_id");
+        if (lastSelected) setSelectedStationId(lastSelected);
+      }
+    }
+  }, []);
+
+  const handleStationChange = (id: string) => {
+    setSelectedStationId(id);
+    try {
+      localStorage.setItem("aeroward_selected_station_id", id);
+    } catch (e) {}
+  };
+
+  const selectedStation = stations.find((s) => s.id === selectedStationId) || stations[0];
 
   // Short term data
   const shortResult = useMemo(() => {
-    return generateShortTermForecast(selectedStationId, selectedPollutant, shortHorizon);
-  }, [selectedStationId, selectedPollutant, shortHorizon]);
+    return generateShortTermForecast(selectedStationId, selectedPollutant, shortHorizon, selectedStation);
+  }, [selectedStationId, selectedPollutant, shortHorizon, selectedStation]);
 
   // Long range data: parse integer safely (e.g. "1m" -> 1, "7m" -> 7)
   const longMonthsCount = useMemo(() => {
@@ -55,8 +96,8 @@ export default function ForecastPage() {
   }, [longHorizon]);
 
   const longResult = useMemo(() => {
-    return generateLongRangeForecast(selectedStationId, selectedPollutant, longMonthsCount);
-  }, [selectedStationId, selectedPollutant, longMonthsCount]);
+    return generateLongRangeForecast(selectedStationId, selectedPollutant, longMonthsCount, selectedStation);
+  }, [selectedStationId, selectedPollutant, longMonthsCount, selectedStation]);
 
   // Chart data formatting with trailing historical context to prevent 1M flattening
   const chartData = useMemo(() => {
@@ -139,10 +180,10 @@ export default function ForecastPage() {
           <MapPin className="h-4 w-4 text-accent" />
           <select
             value={selectedStationId}
-            onChange={(e) => setSelectedStationId(e.target.value)}
+            onChange={(e) => handleStationChange(e.target.value)}
             className="rounded-sm border border-border bg-surface-elevated px-3 py-1.5 font-sans text-xs text-text-primary focus:border-accent focus:outline-none"
           >
-            {STATIONS.map((s) => (
+            {stations.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name} ({s.city})
               </option>

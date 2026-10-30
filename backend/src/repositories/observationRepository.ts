@@ -124,8 +124,12 @@ export class ObservationRepository {
   }
 
   // Realistic Historical Time-Series with Autocorrelation and Episodic Anomaly Modeling
-  getHistorical(stationId: string = "kanpur_iitk", days: number = 30): HistoricalRecord[] {
-    const station = STATIONS.find((s) => s.id === stationId) || STATIONS[0];
+  getHistorical(
+    stationId: string = "kanpur_iitk",
+    days: number = 30,
+    customStation?: Station
+  ): HistoricalRecord[] {
+    const station = customStation || STATIONS.find((s) => s.id === stationId) || STATIONS[0];
     const now = new Date();
     const records: HistoricalRecord[] = [];
 
