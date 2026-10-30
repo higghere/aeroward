@@ -11,6 +11,7 @@ import { routingEngine } from "../geospatial/routingEngine.js";
 import { scenarioEngine } from "../scenarios/scenarioEngine.js";
 import { DATA_SOURCES_REGISTRY } from "../repositories/dataStore.js";
 import { liveAirQualityService } from "../services/liveAirQualityService.js";
+import { geocodingService } from "../services/geocodingService.js";
 import {
   LocationQuerySchema,
   HistoryQuerySchema,
@@ -42,13 +43,37 @@ export class AirQualityController {
     if (!body || !body.name || body.lat === undefined || body.lng === undefined) {
       return reply.status(400).send({ error: "Missing required station fields: name, lat, lng" });
     }
+
+    let resolvedLat = Number(body.lat);
+    let resolvedLng = Number(body.lng);
+    let resolvedCity = body.city || "Custom Location";
+    let resolvedState = body.state || "Uttar Pradesh";
+
+    // Geospatial Integrity Guard:
+    // If the station name or city mentions a known outside region (e.g. Agra, Mumbai, Shillong, Delhi),
+    // but the incoming lat/lng matches Kanpur defaults (~26.47, 80.32), automatically resolve true coordinates.
+    const isKanpurDefaultCoords = Math.abs(resolvedLat - 26.475) < 0.05 && Math.abs(resolvedLng - 80.32) < 0.05;
+    const isNamedNonKanpur =
+      !body.name.toLowerCase().includes("kanpur") &&
+      !resolvedCity.toLowerCase().includes("kanpur");
+
+    if (isKanpurDefaultCoords && isNamedNonKanpur) {
+      const geo = await geocodingService.resolveLocation(body.name || resolvedCity);
+      if (geo && (Math.abs(geo.lat - 26.475) > 0.1 || Math.abs(geo.lng - 80.32) > 0.1)) {
+        resolvedLat = geo.lat;
+        resolvedLng = geo.lng;
+        resolvedCity = geo.city || resolvedCity;
+        resolvedState = geo.state || resolvedState;
+      }
+    }
+
     const newStation = {
       id: body.id || `custom_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       name: body.name,
-      city: body.city || "Custom Location",
-      state: body.state || "Uttar Pradesh",
-      lat: Number(body.lat),
-      lng: Number(body.lng),
+      city: resolvedCity,
+      state: resolvedState,
+      lat: resolvedLat,
+      lng: resolvedLng,
       elevation_m: Number(body.elevation_m) || 125,
       station_type: (body.station_type || "Micro_Sensor") as any,
       operator: body.operator || "Citizen Science / Custom Station",
@@ -118,6 +143,8 @@ export class AirQualityController {
     }
 
     const apiKey = config.GOOGLE_MAPS_API_KEY;
+
+    // 1. If Google API is available and not exhausted, try Google Places API (New)
     try {
       if (placeId && !placeId.startsWith("custom_") && !placeId.startsWith("geo_")) {
         const googleRes = await fetch(
@@ -153,46 +180,21 @@ export class AirQualityController {
         }
       }
     } catch (err) {
-      // Continue to high-precision Nominatim fallback below
+      // Continue to geocodingService
     }
 
-    // High-precision OpenStreetMap Nominatim fallback when Google 429 quota is reached
-    try {
-      const searchTarget = fallbackQuery || (placeId ? placeId.replace(/[_-]/g, " ") : "India");
-      const nomRes = await fetch(
-        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(searchTarget)}&format=json&addressdetails=1&limit=1`,
-        { headers: { "User-Agent": "AeroWard-AirQuality-Intelligence/1.0" } }
-      );
-      if (nomRes.ok) {
-        const nomData = (await nomRes.json()) as any[];
-        if (nomData && nomData.length > 0) {
-          const item = nomData[0];
-          const addr = item.address || {};
-          const detectedCity = addr.city || addr.town || addr.village || addr.state_district || addr.county || searchTarget;
-          const detectedState = addr.state || addr.country || "India";
-          return reply.send({
-            placeId: placeId || `geo_${Date.now()}`,
-            name: item.name || detectedCity,
-            formattedAddress: item.display_name,
-            lat: parseFloat(item.lat),
-            lng: parseFloat(item.lon),
-            city: detectedCity,
-            state: detectedState,
-          });
-        }
-      }
-    } catch (nomErr) {
-      // ignore
-    }
+    // 2. High-precision Geocoding Service (National index + Photon API + Nominatim)
+    const targetString = fallbackQuery || (placeId ? placeId.replace(/[_-]/g, " ") : "India");
+    const geo = await geocodingService.resolveLocation(targetString);
 
     return reply.send({
-      placeId: placeId || "custom_loc",
-      name: fallbackQuery || "Custom Monitoring Station",
-      formattedAddress: fallbackQuery ? `${fallbackQuery}, India` : "Custom Airshed Node",
-      lat: 26.475,
-      lng: 80.32,
-      city: fallbackQuery || "Custom",
-      state: "India",
+      placeId: placeId || `geo_${Date.now()}`,
+      name: geo.name,
+      formattedAddress: geo.formattedAddress,
+      lat: geo.lat,
+      lng: geo.lng,
+      city: geo.city,
+      state: geo.state,
     });
   }
 

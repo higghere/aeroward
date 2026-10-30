@@ -246,7 +246,7 @@ export default function HistoryPage() {
 
         <div className="mt-6 h-[400px] w-full">
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={chartData} margin={{ top: 15, right: 20, left: 0, bottom: 5 }}>
+            <AreaChart data={chartData} margin={{ top: 15, right: 35, left: 15, bottom: 5 }}>
               <defs>
                 <linearGradient id="historyColor" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="#c76b45" stopOpacity={0.4} />
@@ -254,7 +254,17 @@ export default function HistoryPage() {
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="#292d29" vertical={false} />
-              <XAxis dataKey="dateStr" stroke="#777c74" fontSize={11} tickLine={false} interval="preserveStartEnd" />
+              <XAxis 
+                dataKey="dateStr" 
+                stroke="#777c74" 
+                fontSize={11} 
+                tickLine={false} 
+                interval={selectedDays === 90 ? 36 : selectedDays === 30 ? 12 : selectedDays === 14 ? 6 : 2}
+                tickFormatter={(val: string) => {
+                  const parts = val.split(" ");
+                  return `${parts[0]} ${parts[1] || ""}`;
+                }}
+              />
               <YAxis stroke="#777c74" fontSize={11} tickLine={false} unit=" µg/m³" />
               <Tooltip
                 content={({ active, payload }) => {
@@ -284,13 +294,13 @@ export default function HistoryPage() {
                 y={60}
                 stroke="#86a98a"
                 strokeDasharray="4 4"
-                label={{ value: "NAAQ Standard 60", fill: "#86a98a", fontSize: 10, position: "insideTopLeft" }}
+                label={{ value: "NAAQ Standard 60", fill: "#86a98a", fontSize: 10, position: "insideTopRight" }}
               />
               <ReferenceLine
                 y={250}
                 stroke="#b95342"
                 strokeDasharray="4 4"
-                label={{ value: "Severe 250", fill: "#b95342", fontSize: 10, position: "insideTopLeft" }}
+                label={{ value: "Severe 250", fill: "#b95342", fontSize: 10, position: "insideTopRight" }}
               />
               <Area
                 type="monotone"

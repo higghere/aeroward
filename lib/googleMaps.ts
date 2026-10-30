@@ -282,13 +282,92 @@ const REGIONAL_GEODATABASE: PlaceSuggestion[] = [
   },
 ];
 
+// Geocode any query string into accurate coordinates and location metadata
+export async function geocodeLocation(
+  query: string,
+  apiKey: string = DEFAULT_GOOGLE_MAPS_API_KEY
+): Promise<PlaceSuggestion | null> {
+  const clean = query.trim();
+  if (!clean) return null;
+
+  // 1. Check built-in regional & national database
+  const lower = clean.toLowerCase();
+  const found = REGIONAL_GEODATABASE.find(
+    (item) =>
+      item.name.toLowerCase().includes(lower) ||
+      item.formattedAddress.toLowerCase().includes(lower) ||
+      item.city.toLowerCase() === lower
+  );
+  if (found) return found;
+
+  // 2. Query backend details proxy with name hint
+  try {
+    const res = await fetch(`/api/v1/places/details?name=${encodeURIComponent(clean)}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.lat && data.lng) {
+        return {
+          placeId: data.placeId || `loc_${Date.now()}`,
+          name: data.name || clean,
+          formattedAddress: data.formattedAddress || `${clean}, India`,
+          city: data.city || clean,
+          state: data.state || "India",
+          lat: data.lat,
+          lng: data.lng,
+          source: "google_places",
+        };
+      }
+    }
+  } catch (err) {
+    // continue
+  }
+
+  // 3. OpenStreetMap Nominatim Direct Fallback
+  try {
+    const res = await fetch(
+      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(clean)}&format=json&addressdetails=1&limit=1`,
+      { headers: { "User-Agent": "AeroWard-AirQuality-Intelligence/1.0" } }
+    );
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data) && data.length > 0) {
+        const item = data[0];
+        const addr = item.address || {};
+        const detectedCity = addr.city || addr.town || addr.village || addr.state_district || clean;
+        const detectedState = addr.state || addr.country || "India";
+        return {
+          placeId: `osm_${item.place_id || Date.now()}`,
+          name: item.name || detectedCity,
+          formattedAddress: item.display_name,
+          city: detectedCity,
+          state: detectedState,
+          lat: parseFloat(item.lat),
+          lng: parseFloat(item.lon),
+          source: "regional_geocoder",
+        };
+      }
+    }
+  } catch (err) {
+    // ignore
+  }
+
+  return null;
+}
+
 // Fetch Place Details from Google Places API or Proxy
-export async function getGooglePlaceDetails(placeId: string, apiKey: string = DEFAULT_GOOGLE_MAPS_API_KEY): Promise<PlaceSuggestion | null> {
+export async function getGooglePlaceDetails(
+  placeId: string,
+  apiKey: string = DEFAULT_GOOGLE_MAPS_API_KEY,
+  nameHint?: string
+): Promise<PlaceSuggestion | null> {
   const key = apiKey || DEFAULT_GOOGLE_MAPS_API_KEY;
 
-  // 1. Try Backend Proxy
+  // 1. Try Backend Proxy with name hint
   try {
-    const res = await fetch(`/api/v1/places/details?placeId=${encodeURIComponent(placeId)}`);
+    const param = nameHint
+      ? `placeId=${encodeURIComponent(placeId)}&name=${encodeURIComponent(nameHint)}`
+      : `placeId=${encodeURIComponent(placeId)}`;
+    const res = await fetch(`/api/v1/places/details?${param}`);
     if (res.ok) {
       const data = await res.json();
       if (data && data.lat && data.lng) {
@@ -296,8 +375,8 @@ export async function getGooglePlaceDetails(placeId: string, apiKey: string = DE
           placeId: data.placeId,
           name: data.name,
           formattedAddress: data.formattedAddress,
-          city: data.city || "Kanpur",
-          state: data.state || "Uttar Pradesh",
+          city: data.city || "Regional Node",
+          state: data.state || "India",
           lat: data.lat,
           lng: data.lng,
           source: "google_places",
@@ -327,22 +406,30 @@ export async function getGooglePlaceDetails(placeId: string, apiKey: string = DE
       const stateComp = data.addressComponents?.find((c: any) =>
         c.types.includes("administrative_area_level_1")
       );
-      return {
-        placeId: data.id,
-        name: data.displayName?.text || data.formattedAddress?.split(",")[0],
-        formattedAddress: data.formattedAddress,
-        lat: data.location?.latitude,
-        lng: data.location?.longitude,
-        city: cityComp ? cityComp.longText : "Kanpur",
-        state: stateComp ? stateComp.longText : "Uttar Pradesh",
-        source: "google_places",
-      };
+      if (data.location?.latitude && data.location?.longitude) {
+        return {
+          placeId: data.id,
+          name: data.displayName?.text || data.formattedAddress?.split(",")[0],
+          formattedAddress: data.formattedAddress,
+          lat: data.location.latitude,
+          lng: data.location.longitude,
+          city: cityComp ? cityComp.longText : "Regional Node",
+          state: stateComp ? stateComp.longText : "India",
+          source: "google_places",
+        };
+      }
     }
   } catch (err) {
     // ignore
   }
 
-  // 3. Check Regional Geodatabase
+  // 3. Fallback to geocoding nameHint
+  if (nameHint) {
+    const geo = await geocodeLocation(nameHint, key);
+    if (geo) return geo;
+  }
+
+  // 4. Check Regional Geodatabase
   const regional = REGIONAL_GEODATABASE.find((r) => r.placeId === placeId);
   return regional || null;
 }
@@ -366,16 +453,18 @@ export async function searchLocationsWithGoogle(
         // Resolve details for the top results
         const detailed = await Promise.all(
           data.suggestions.slice(0, 5).map(async (s: any) => {
-            const details = await getGooglePlaceDetails(s.placeId, key);
+            const details = await getGooglePlaceDetails(s.placeId, key, s.formattedAddress || s.name);
             if (details) return details;
+            const geo = await geocodeLocation(s.formattedAddress || s.name, key);
+            if (geo) return geo;
             return {
               placeId: s.placeId,
               name: s.name,
               formattedAddress: s.formattedAddress,
-              city: "Kanpur",
-              state: "Uttar Pradesh",
-              lat: 26.475,
-              lng: 80.32,
+              city: s.name?.split(",")[0] || "Custom Station",
+              state: "India",
+              lat: 27.18,
+              lng: 78.01,
               source: "google_places" as const,
             };
           })
@@ -409,17 +498,20 @@ export async function searchLocationsWithGoogle(
           const detailed = await Promise.all(
             rawSuggestions.slice(0, 5).map(async (s: any) => {
               const pid = s.placePrediction?.placeId;
-              const details = pid ? await getGooglePlaceDetails(pid, key) : null;
+              const textName = s.placePrediction?.text?.text || s.placePrediction?.structuredFormat?.mainText?.text;
+              const details = pid ? await getGooglePlaceDetails(pid, key, textName) : null;
               if (details) return details;
+              const geo = await geocodeLocation(textName || query, key);
+              if (geo) return geo;
 
               return {
                 placeId: pid,
-                name: s.placePrediction?.structuredFormat?.mainText?.text || s.placePrediction?.text?.text,
+                name: textName || "Regional Station",
                 formattedAddress: s.placePrediction?.text?.text,
-                city: "Kanpur",
-                state: "Uttar Pradesh",
-                lat: 26.475,
-                lng: 80.32,
+                city: textName?.split(",")[0] || "Regional Station",
+                state: "India",
+                lat: 27.18,
+                lng: 78.01,
                 source: "google_places" as const,
               };
             })

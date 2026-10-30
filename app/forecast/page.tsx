@@ -271,7 +271,7 @@ export default function ForecastPage() {
         {/* The Recharts Container */}
         <div className="mt-6 h-[420px] w-full">
           <ResponsiveContainer width="100%" height="100%">
-            <ComposedChart data={chartData} margin={{ top: 15, right: 20, left: 0, bottom: 5 }}>
+            <ComposedChart data={chartData} margin={{ top: 15, right: 35, left: 15, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#292d29" vertical={false} />
               <XAxis dataKey="label" stroke="#777c74" fontSize={11} tickLine={false} />
               <YAxis stroke="#777c74" fontSize={11} tickLine={false} unit=" µg/m³" />
@@ -317,14 +317,14 @@ export default function ForecastPage() {
                 y={60}
                 stroke="#86a98a"
                 strokeDasharray="4 4"
-                label={{ value: "NAAQ Standard 60", fill: "#86a98a", fontSize: 10, position: "insideTopLeft" }}
+                label={{ value: "NAAQ Standard 60", fill: "#86a98a", fontSize: 10, position: "insideTopRight" }}
               />
               {/* Severe Threshold */}
               <ReferenceLine
                 y={250}
                 stroke="#b95342"
                 strokeDasharray="4 4"
-                label={{ value: "Severe 250", fill: "#b95342", fontSize: 10, position: "insideTopLeft" }}
+                label={{ value: "Severe 250", fill: "#b95342", fontSize: 10, position: "insideTopRight" }}
               />
 
               {/* Upper & Lower Confidence Envelopes */}

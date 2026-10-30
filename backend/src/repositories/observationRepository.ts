@@ -107,17 +107,18 @@ export class ObservationRepository {
       const isNight = hour === 0 || hour === 6;
 
       // Deterministic episodic intervals based on relative day position
-      // Episodic Event 1: Post-monsoon Stubble Burning Plume (occurred ~22-26 days ago)
-      const isStubbleBurningPlume = dayOffset >= 22 && dayOffset <= 26;
+      // Continuous atmospheric dynamic envelopes:
+      // 1. Post-monsoon Stubble Burning Plume (peaks around day 24 with realistic Gaussian dispersion width)
+      const stubbleEnvelope = Math.exp(-0.5 * Math.pow((dayOffset - 24) / 2.2, 2));
 
-      // Episodic Event 2: Western Disturbance Rain Washout (occurred ~15-16 days ago)
-      const isRainWashout = dayOffset >= 15 && dayOffset <= 16;
+      // 2. Western Disturbance Washout (rapid scavenging on day 15.5, gradual recovery over 2 days)
+      const washoutEnvelope = Math.exp(-0.5 * Math.pow((dayOffset - 15.5) / 1.1, 2));
 
-      // Episodic Event 3: Acute Winter Thermal Inversion & Radiational Fog (occurred ~8-11 days ago)
-      const isSevereInversion = dayOffset >= 8 && dayOffset <= 11;
+      // 3. Acute Winter Radiational Inversion (days 8-11, strong nocturnal boundary layer trap)
+      const inversionEnvelope = Math.exp(-0.5 * Math.pow((dayOffset - 9.5) / 1.8, 2));
 
-      // Episodic Event 4: Pre-Monsoon Crustal Dust Surge (occurred ~2-3 days ago)
-      const isDustSurge = dayOffset >= 2 && dayOffset <= 3;
+      // 4. Pre-Monsoon Crustal Dust Surge (days 2-3, coarse mineral advection)
+      const dustEnvelope = Math.exp(-0.5 * Math.pow((dayOffset - 2.5) / 1.0, 2));
 
       let pm25 = 0;
       let pm10 = 0;
@@ -131,68 +132,67 @@ export class ObservationRepository {
 
       // Organic stochastic noise with day-to-day weather autocorrelation (AR(1) model)
       const pseudoRandom = Math.sin(i * 12.9898 + 78.233) * 43758.5453;
-      const noise = (pseudoRandom - Math.floor(pseudoRandom) - 0.5) * 22;
-      arState = 0.82 * arState + 0.18 * (145 * emissionFactor) + noise * 0.4;
+      const noise = (pseudoRandom - Math.floor(pseudoRandom) - 0.5) * 16;
+      arState = 0.84 * arState + 0.16 * (135 * emissionFactor) + noise * 0.35;
 
-      if (isStubbleBurningPlume) {
-        // High absorbing smoke: intense submicron PM2.5 spike, elevated CO and NO2
-        const plumeIntensity = Math.sin(((dayOffset - 22) / 4) * Math.PI);
-        pm25 = Math.round((280 + plumeIntensity * 160 + noise * 0.5) * emissionFactor);
-        pm10 = Math.round(pm25 * 1.35 + 20);
-        no2 = Math.round((65 + plumeIntensity * 28) * emissionFactor);
-        so2 = 24;
-        co = Number((2.2 + plumeIntensity * 1.4).toFixed(2));
-        o3 = Math.round(isNight ? 16 : 45);
-        pblh_m = isNight ? 240 : 850;
-        wind_speed_ms = Number((1.1 + Math.abs(noise) * 0.02).toFixed(1));
-        events.push("Transboundary Agricultural Stubble Burning Plume (Elevated TROPOMI UVAI > 2.2)");
-      } else if (isRainWashout) {
-        // Western disturbance precipitation: dramatic aerosol clearance down to clean air
-        pm25 = Math.round((36 + Math.abs(noise) * 0.5) * emissionFactor);
-        pm10 = Math.round(pm25 * 1.4 + 10);
-        no2 = Math.round(22 * emissionFactor);
-        so2 = 8;
-        co = 0.5;
-        o3 = 28;
-        pblh_m = isNight ? 450 : 980;
-        wind_speed_ms = Number((4.6 + Math.abs(noise) * 0.05).toFixed(1));
-        events.push("Western Disturbance Precipitation Scavenging & Atmospheric Washout (-78% PM Clearance)");
-      } else if (isSevereInversion) {
-        // Extreme winter radiational inversion: nocturnal trap, shallow mixing
-        const invMultiplier = isNight ? 1.6 : 0.85;
-        pm25 = Math.round((210 * invMultiplier + noise * 0.6) * emissionFactor);
-        pm10 = Math.round(pm25 * 1.55 + 30);
-        no2 = Math.round((isNight ? 82 : 48) * emissionFactor);
-        so2 = 26;
-        co = Number((isNight ? 2.4 : 1.1).toFixed(2));
-        o3 = Math.round(isNight ? 12 : 52);
-        pblh_m = isNight ? 190 : 720;
-        wind_speed_ms = Number((0.8 + Math.abs(noise) * 0.02).toFixed(1));
-        events.push("Nocturnal Radiational Thermal Inversion (Boundary Layer Compressed < 220m)");
-      } else if (isDustSurge) {
-        // Pre-monsoon mineral dust surge: elevated coarse PM10, but stable/lower NO2
-        pm10 = Math.round((460 + Math.abs(noise) * 6) * emissionFactor);
-        pm25 = Math.round(pm10 * 0.32 + noise * 0.3); // Low PM2.5/PM10 fraction (~0.32) indicative of crustal dust
-        no2 = Math.round(38 * emissionFactor); // Combustion tracer does NOT spike
-        so2 = 14;
-        co = 0.85;
-        o3 = Math.round(isNight ? 26 : 74);
-        pblh_m = isNight ? 700 : 1750;
-        wind_speed_ms = Number((5.8 + Math.abs(noise) * 0.08).toFixed(1));
-        events.push("Pre-Monsoon Crustal Dust Suspension (Thar Desert Long-Range Advection)");
-      } else {
-        // Baseline diurnal atmospheric physics:
-        // Night inversion (compression + space heating) vs afternoon solar convective mixing
-        const diurnalFactor = isNight ? 1.28 : 0.82;
-        pm25 = Math.max(25, Math.round(arState * diurnalFactor + noise));
-        pm10 = Math.round(pm25 * 1.58 + 25);
-        no2 = Math.round((isNight ? 52 : 36) * emissionFactor);
-        so2 = Math.round(16 * emissionFactor);
-        co = Number(((isNight ? 1.4 : 0.8) * emissionFactor).toFixed(2));
-        o3 = Math.round(isNight ? 22 : 62);
-        pblh_m = isNight ? 310 : 1240;
-        wind_speed_ms = Number(((isNight ? 1.2 : 2.6) + Math.abs(noise) * 0.03).toFixed(1));
+      // Diurnal boundary layer variation: nocturnal compression vs daytime convective mixing
+      const diurnalDiff = isNight ? 24 : -18;
+      let basePm = (arState + diurnalDiff) * emissionFactor;
+
+      // Wet deposition washout reduction
+      if (washoutEnvelope > 0.05) {
+        basePm = basePm * (1 - 0.72 * washoutEnvelope);
+        if (washoutEnvelope > 0.35) {
+          events.push("Western Disturbance Precipitation Scavenging & Atmospheric Washout (-78% PM Clearance)");
+        }
       }
+
+      // Stubble burning smoke plume injection
+      let smokeAddition = 0;
+      if (stubbleEnvelope > 0.04) {
+        const diurnalSmokeMod = isNight ? 1.35 : 0.88;
+        smokeAddition = stubbleEnvelope * 220 * diurnalSmokeMod * emissionFactor;
+        if (stubbleEnvelope > 0.28) {
+          events.push("Transboundary Agricultural Stubble Burning Plume (Elevated TROPOMI UVAI > 2.2)");
+        }
+      }
+
+      // Nocturnal radiational inversion trapping
+      let inversionAddition = 0;
+      if (inversionEnvelope > 0.05) {
+        const invEffect = isNight ? 1.55 : 0.82;
+        inversionAddition = inversionEnvelope * 105 * invEffect * emissionFactor;
+        if (inversionEnvelope > 0.32 && isNight) {
+          events.push("Nocturnal Radiational Thermal Inversion (Boundary Layer Compressed < 220m)");
+        }
+      }
+
+      // Total PM2.5 calculation
+      pm25 = Math.max(22, Math.round(basePm + smokeAddition + inversionAddition + noise * 0.25));
+
+      // Dust surge primarily elevates coarse PM10 with low PM2.5 ratio
+      if (dustEnvelope > 0.08) {
+        pm10 = Math.round((pm25 * 1.5 + dustEnvelope * 280) * emissionFactor);
+        if (dustEnvelope > 0.35) {
+          events.push("Pre-Monsoon Crustal Dust Suspension (Thar Desert Long-Range Advection)");
+        }
+      } else {
+        pm10 = Math.round(pm25 * 1.62 + 20);
+      }
+
+      // Chemistry tracers
+      no2 = Math.round((isNight ? 58 : 38) * emissionFactor + (stubbleEnvelope * 22) + (inversionEnvelope * 26));
+      so2 = Math.round(16 * emissionFactor + (stubbleEnvelope * 6));
+      co = Number(((isNight ? 1.6 : 0.9) * emissionFactor + (stubbleEnvelope * 1.4)).toFixed(2));
+      o3 = Math.round(isNight ? 18 : 62);
+
+      // Meteorology variables
+      pblh_m = Math.round(
+        (isNight ? 280 : 1250) - (inversionEnvelope * 120) + (washoutEnvelope * 200)
+      );
+      wind_speed_ms = Number(
+        ((washoutEnvelope > 0.2 ? 4.8 : isNight ? 1.2 : 2.6) + Math.abs(noise) * 0.02).toFixed(1)
+      );
 
       const aqiRes = calculateAQI({ pm25, pm10, no2, so2, co, o3 });
 

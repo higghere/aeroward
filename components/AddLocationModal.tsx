@@ -19,7 +19,8 @@ import {
   searchLocationsWithGoogle, 
   loadGoogleMapsScript, 
   PlaceSuggestion,
-  DEFAULT_GOOGLE_MAPS_API_KEY
+  DEFAULT_GOOGLE_MAPS_API_KEY,
+  geocodeLocation
 } from "@/lib/googleMaps";
 
 interface AddLocationModalProps {
@@ -42,15 +43,15 @@ export default function AddLocationModal({
 
   // Form State
   const [name, setName] = useState("");
-  const [city, setCity] = useState("Kanpur");
-  const [state, setState] = useState("Uttar Pradesh");
-  const [lat, setLat] = useState<number>(26.475);
-  const [lng, setLng] = useState<number>(80.32);
+  const [city, setCity] = useState("");
+  const [state, setState] = useState("");
+  const [lat, setLat] = useState<number | "">("");
+  const [lng, setLng] = useState<number | "">("");
   const [elevation, setElevation] = useState<number>(126);
   const [stationType, setStationType] = useState<"CAAQMS" | "Research_SuperSite" | "Micro_Sensor">("CAAQMS");
-  const [operator, setOperator] = useState("UPPCB / CPCB");
-  const [siltLoading, setSiltLoading] = useState<number>(5.4);
-  const [canyonHwRatio, setCanyonHwRatio] = useState<number>(1.25);
+  const [operator, setOperator] = useState("AeroWard / State PCB");
+  const [siltLoading, setSiltLoading] = useState<number>(4.8);
+  const [canyonHwRatio, setCanyonHwRatio] = useState<number>(1.15);
   const [canyonBtr, setCanyonBtr] = useState<number>(0.75);
 
   const searchDebounceRef = useRef<NodeJS.Timeout | null>(null);
@@ -101,26 +102,52 @@ export default function AddLocationModal({
 
   const handleSelectSuggestion = (sug: PlaceSuggestion) => {
     const resolvedName = sug.name || sug.formattedAddress?.split(",")[0] || "Custom Monitoring Station";
+    const resolvedCity = sug.city || sug.formattedAddress?.split(",")[0] || "Regional Station";
     setName(resolvedName);
-    setCity(sug.city || "Kanpur");
-    setState(sug.state || "Uttar Pradesh");
+    setCity(resolvedCity);
+    setState(sug.state || "India");
     setLat(Number(sug.lat.toFixed(5)));
     setLng(Number(sug.lng.toFixed(5)));
     setSuggestions([]);
     setSearchQuery(sug.formattedAddress || sug.name);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const resolvedName = (name.trim() || searchQuery.trim() || (city.trim() ? `${city.trim()} Station` : "Custom Monitoring Station")).replace(/\s+/g, " ");
+    setIsSearching(true);
+
+    const queryTarget = searchQuery.trim() || name.trim() || city.trim();
+    let geo: PlaceSuggestion | null = null;
+    if (queryTarget) {
+      geo = await geocodeLocation(queryTarget, apiKey);
+    }
+
+    const finalLat =
+      lat !== "" && Number(lat) !== 26.475
+        ? Number(lat)
+        : geo?.lat ?? 27.1767;
+    const finalLng =
+      lng !== "" && Number(lng) !== 80.32
+        ? Number(lng)
+        : geo?.lng ?? 78.0081;
+    const finalCity =
+      city.trim() && city.trim() !== "Kanpur"
+        ? city.trim()
+        : geo?.city || queryTarget.split(",")[0].trim() || "Regional Station";
+    const finalState = state.trim() || geo?.state || "India";
+    const finalName =
+      name.trim() ||
+      geo?.name ||
+      queryTarget ||
+      `${finalCity} Air Quality Station`;
 
     const newStation: Station = {
-      id: `station_${(city || "loc").toLowerCase().replace(/[^a-z0-9]/g, "_")}_${Date.now().toString(36)}`,
-      name: resolvedName,
-      city: city.trim() || "Kanpur",
-      state: state.trim() || "Uttar Pradesh",
-      lat: Number(lat) || 26.475,
-      lng: Number(lng) || 80.32,
+      id: `station_${finalCity.toLowerCase().replace(/[^a-z0-9]/g, "_")}_${Date.now().toString(36)}`,
+      name: finalName,
+      city: finalCity,
+      state: finalState,
+      lat: Number(finalLat.toFixed(5)),
+      lng: Number(finalLng.toFixed(5)),
       elevation_m: Number(elevation) || 125,
       station_type: stationType,
       operator: operator.trim() || "AeroWard Network Monitor",
@@ -130,7 +157,14 @@ export default function AddLocationModal({
       canyon_btr: Number(canyonBtr) || 0.7,
     };
 
+    setIsSearching(false);
     onAddStation(newStation);
+    setName("");
+    setCity("");
+    setState("");
+    setLat("");
+    setLng("");
+    setSearchQuery("");
     onClose();
   };
 
