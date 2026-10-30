@@ -1,0 +1,19 @@
+services:
+  # AeroWard: Unified Full-Stack Service (Next.js Frontend + Fastify Backend)
+  - type: web
+    name: aeroward
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DEMO_MODE
+        value: "true"
+      - key: ENABLE_SCHEDULED_INGESTION
+        value: "true"
+      - key: NEXT_TELEMETRY_DISABLED
+        value: "1"
+      - key: LOG_LEVEL
+        value: info

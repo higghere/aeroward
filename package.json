@@ -9,10 +9,11 @@
     "dev:backend": "tsx watch backend/src/server.ts",
     "build:frontend": "next build",
     "build:backend": "tsc -p backend/tsconfig.json",
-    "build": "next build",
-    "start:frontend": "next start -p 3000",
+    "build": "npm run build:backend && npm run build:frontend",
+    "start:frontend": "next start",
     "start:backend": "node backend/dist/server.js",
-    "start": "concurrently -k -p \"[{name}]\" -n \"BACKEND,FRONTEND\" -c \"cyan.bold,green.bold\" \"npm run start:backend\" \"npm run start:frontend\"",
+    "start": "node scripts/start-production.mjs",
+    "start:concurrent": "concurrently -k -p \"[{name}]\" -n \"BACKEND,FRONTEND\" -c \"cyan.bold,green.bold\" \"npm run start:backend\" \"npm run start:frontend\"",
     "test": "node --import tsx --test backend/src/tests/**/*.test.ts"
   },
   "dependencies": {
