@@ -16,6 +16,7 @@ const envSchema = z.object({
   SENTINEL_API_KEY: z.string().optional().default(""),
   ECMWF_API_KEY: z.string().optional().default(""),
   GOOGLE_MAPS_API_KEY: z.string().optional().default(process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || "AIzaSyBO9KDwxmwwvtYTFkbswzQEi57uA-bZ69I"),
+  OPENWEATHER_API_KEY: z.string().optional().default(process.env.OPENWEATHER_API_KEY || process.env.NEXT_PUBLIC_OPENWEATHER_API_KEY || "cf67e2ec75f8211e03f192b54d43271d"),
 });
 
 export const config = envSchema.parse(process.env);
