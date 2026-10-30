@@ -38,15 +38,20 @@ export class LiveAirQualityService {
           }
 
           // Regional atmospheric calibrations:
-          // Indo-Gangetic Plain (lat: 25-29°N, lng: 75-86°E) experiences severe winter nocturnal inversions
-          const isIGP = lat >= 24.5 && lat <= 29.5 && lng >= 75.0 && lng <= 86.5;
+          const scity = (station.city || "").toLowerCase();
+          const sname = (station.name || "").toLowerCase();
+          const isDoonValley = scity.includes("dehradun") || sname.includes("dehradun") || scity.includes("rishikesh") || (lat >= 29.8 && lat <= 30.6 && lng >= 77.8 && lng <= 78.6);
+          const isIGP = !isDoonValley && lat >= 24.5 && lat <= 29.5 && lng >= 75.0 && lng <= 86.5;
           const inversionFactor = (isIGP && isNocturnalInversion) ? 1.4 : 1.0;
-          const totalModifier = Math.min(2.5, Math.max(0.7, microFactor * inversionFactor));
+
+          // Doon Valley topographic valley adjustment (reconciles coarse global 40km CAMS with CAAQMS ground truth):
+          const valleyCorrection = isDoonValley ? 2.7 : 1.0;
+          const totalModifier = Math.min(3.0, Math.max(0.7, microFactor * inversionFactor * valleyCorrection));
 
           const rawPm25 = Number(cur.pm2_5) || 35;
           const pm25 = Math.round(Math.max(12, rawPm25 * totalModifier));
           const rawPm10 = Number(cur.pm10) || pm25 * 1.6;
-          const pm10 = Math.round(Math.max(pm25 * 1.2, rawPm10 * totalModifier));
+          const pm10 = Math.round(Math.max(pm25 * (isDoonValley ? 2.15 : 1.2), rawPm10 * totalModifier));
           const no2 = Math.round((Number(cur.nitrogen_dioxide) || 28) * (isNocturnalInversion ? 1.3 : 1.0));
           const so2 = Math.round(Number(cur.sulphur_dioxide) || 14);
           const co = Number(((Number(cur.carbon_monoxide) || 380) / 500).toFixed(2));
