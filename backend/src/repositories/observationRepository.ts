@@ -1,5 +1,5 @@
 import { Station, Observation, HistoricalRecord, STATIONS } from "./dataStore.js";
-import { calculateAQI } from "../utils/aqi.js";
+import { calculateAQI, calculateUSAQI } from "../utils/aqi.js";
 
 export class ObservationRepository {
   // Generates current observation for a station based on atmospheric physics and seasonal factors
@@ -58,9 +58,9 @@ export class ObservationRepository {
     let regionalBasePm25 = 108;
     let regionalBasePm10Multiplier = 1.65;
     if (airshedType === "DOON_VALLEY_FOOTHILL") {
-      // Dehradun Doon Valley: elevation ~640m, Shivalik valley trapping, authentic CAAQMS NAQI ~135-145
-      regionalBasePm25 = isNocturnalInversion ? 74 : 68;
-      regionalBasePm10Multiplier = 2.1; // Silt and road dust in valley floor
+      // Dehradun Doon Valley: elevation ~640m, Himalayan foothill drainage, clean mountain ventilation
+      regionalBasePm25 = isNocturnalInversion ? 21 : 18;
+      regionalBasePm10Multiplier = 1.8;
     } else if (airshedType === "HIMALAYAN_HIGHLAND") {
       // Pristine mountain air (Shillong, Shimla): authentic NAQI ~20-50
       regionalBasePm25 = isNocturnalInversion ? 20 : 14;
@@ -80,13 +80,14 @@ export class ObservationRepository {
 
     const basePm25 = regionalBasePm25 * emissionFactor;
     const pm25 = Math.round(basePm25 + (Math.sin(hour / 3) * 4));
-    const pm10 = Math.round(pm25 * regionalBasePm10Multiplier + (airshedType === "DOON_VALLEY_FOOTHILL" ? 15 : 20));
+    const pm10 = Math.round(pm25 * regionalBasePm10Multiplier + (airshedType === "DOON_VALLEY_FOOTHILL" ? 8 : 20));
     const no2 = Math.round((isNocturnalInversion ? (airshedType === "IGP_CRITICAL" ? 68 : 36) : (airshedType === "IGP_CRITICAL" ? 42 : 26)) * emissionFactor);
     const so2 = Math.round((airshedType === "IGP_CRITICAL" ? 18 : 10) * emissionFactor);
     const co = Number(((isNocturnalInversion ? 1.4 : 0.8) * (airshedType === "IGP_CRITICAL" ? 1.2 : 0.8) * emissionFactor).toFixed(2));
     const o3 = Math.round(isNocturnalInversion ? 22 : 54);
 
     const aqiResult = calculateAQI({ pm25, pm10, no2, so2, co, o3 });
+    const usa = calculateUSAQI(pm25);
 
     return {
       id: `obs_${stationId}_${now.getTime()}`,
@@ -100,6 +101,8 @@ export class ObservationRepository {
       o3,
       aqi: aqiResult.aqi,
       category: aqiResult.category,
+      us_aqi: usa.usAqi,
+      us_category: usa.usCategory,
       dominantPollutant: aqiResult.dominantPollutant,
       dataQuality: "validated",
       meteorology: {

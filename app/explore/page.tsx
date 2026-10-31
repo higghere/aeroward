@@ -102,7 +102,13 @@ export default function ExplorePage() {
       if (res.ok) {
         const data = await res.json();
         if (data && data.observation) {
-          setObservations((prev) => [data.observation, ...prev.filter((o) => o.stationId !== newStation.id)]);
+          const actualStation = data.station || newStation;
+          setStations((prev) => [actualStation, ...prev.filter((s) => s.id !== newStation.id && s.id !== actualStation.id)]);
+          setSelectedStationId(actualStation.id);
+          setObservations((prev) => [data.observation, ...prev.filter((o) => o.stationId !== newStation.id && o.stationId !== actualStation.id)]);
+          try {
+            localStorage.setItem("aeroward_selected_station_id", actualStation.id);
+          } catch (e) {}
         }
       }
     } catch (err) {
