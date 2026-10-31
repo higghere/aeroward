@@ -1,374 +1,476 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import maplibregl from "maplibre-gl";
-import { Station, Observation } from "@/backend/src/repositories/dataStore";
-import { getPollutionColor } from "@/lib/theme";
+import { useState, useEffect } from "react";
+import dynamic from "next/dynamic";
 import {
-  GANGA_RIVER_GEOJSON,
-  MAJOR_CORRIDORS_GEOJSON,
-  KANPUR_MUNICIPAL_BOUNDARY,
-} from "@/lib/kanpurGeography";
+  Layers,
+  MapPin,
+  Wind,
+  Satellite,
+  Activity,
+  AlertTriangle,
+  Clock,
+  Info,
+  PlusCircle,
+  Sparkles
+} from "lucide-react";
+import { STATIONS, Station, Observation } from "@/backend/src/repositories/dataStore";
+import { observationRepository } from "@/backend/src/repositories/observationRepository";
+import { getPollutionColor } from "@/lib/theme";
+import AddLocationModal from "@/components/AddLocationModal";
 
-interface AirQualityMapProps {
-  stations: Station[];
-  observations: Observation[];
-  selectedStationId: string;
-  onSelectStation: (id: string) => void;
-  activePollutant: "PM2.5" | "PM10" | "NO2" | "SO2" | "CO" | "O3" | "AQI" | "AQI (US)";
-  showWindVectors: boolean;
-  showSatelliteOverlay: boolean;
-  showStreetCanyons: boolean;
-}
+// Dynamically import MapLibre component with SSR disabled
+const AirQualityMap = dynamic(() => import("@/components/AirQualityMap"), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-full min-h-[550px] w-full items-center justify-center rounded-sm border border-border bg-surface font-sans text-xs text-text-muted">
+      <div className="flex items-center gap-2">
+        <Activity className="h-4 w-4 animate-spin text-accent" />
+        <span>Initializing MapLibre GL Environmental Spatial Layers...</span>
+      </div>
+    </div>
+  ),
+});
 
-export default function AirQualityMap({
-  stations,
-  observations,
-  selectedStationId,
-  onSelectStation,
-  activePollutant,
-  showWindVectors,
-  showSatelliteOverlay,
-  showStreetCanyons,
-}: AirQualityMapProps) {
-  const mapContainerRef = useRef<HTMLDivElement | null>(null);
-  const mapRef = useRef<maplibregl.Map | null>(null);
-  const markersRef = useRef<{ [key: string]: maplibregl.Marker }>({});
-  const [mapLoaded, setMapLoaded] = useState(false);
-  const [activeCanyon, setActiveCanyon] = useState<{
-    name: string;
-    hwRatio: number;
-    btr: number;
-  } | null>(null);
+const POLLUTANTS = [
+  "AQI (US)", "AQI", "PM2.5", "PM10", "NO2", "SO2", "CO", "O3"
+] as const;
 
-  const activeTarget = stations.find((s) => s.id === selectedStationId) ?? stations[0];
+type PollutantType = typeof POLLUTANTS[number];
+
+export default function ExplorePage() {
+  const [stations, setStations] = useState<Station[]>(STATIONS);
+  const [selectedStationId, setSelectedStationId] = useState<string>("kanpur_nehru");
+  const [activePollutant, setActivePollutant] = useState<PollutantType>("AQI (US)");
+  const [observations, setObservations] = useState<Observation[]>([]);
+  const [showWind, setShowWind] = useState(true);
+  const [showSatellite, setShowSatellite] = useState(true);
+  const [showCanyons, setShowCanyons] = useState(true);
+  const [timeStepIndex, setTimeStepIndex] = useState(4); // 4 = "Now"
+  const [isAddLocationModalOpen, setIsAddLocationModalOpen] = useState(false);
+
+  const TIME_STEPS = ["-24h", "-18h", "-12h", "-6h", "Current Telemetry", "+6h GNN", "+12h GNN", "+24h GNN"];
 
   useEffect(() => {
-    if (!mapContainerRef.current) return;
+    // 1. Initial physics state for immediate render
+    setObservations(observationRepository.getAllCurrent());
 
-    const darkStyle: maplibregl.StyleSpecification = {
-      version: 8,
-      sources: {
-        "esri-dark-gray": {
-          type: "raster",
-          tiles: [
-            "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
-          ],
-          tileSize: 256,
-          attribution: "&copy; Esri, HERE, Garmin, OpenStreetMap",
-        },
-        "esri-dark-reference": {
-          type: "raster",
-          tiles: [
-            "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}",
-          ],
-          tileSize: 256,
-        },
-      },
-      layers: [
-        {
-          id: "esri-dark-base-layer",
-          type: "raster",
-          source: "esri-dark-gray",
-          minzoom: 0,
-          maxzoom: 18,
-        },
-        {
-          id: "esri-dark-reference-layer",
-          type: "raster",
-          source: "esri-dark-reference",
-          minzoom: 0,
-          maxzoom: 18,
-        },
-      ],
-    };
+    // 2. Fetch live registered stations from backend API
+    fetch("/api/v1/stations")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && data.stations && data.stations.length > 0) {
+          setStations(data.stations);
+        }
+      })
+      .catch(() => {});
 
-    const map = new maplibregl.Map({
-      container: mapContainerRef.current,
-      style: darkStyle,
-      center: [80.315, 26.475],
-      zoom: 11.8,
-      pitch: 32,
-      bearing: -10,
-      attributionControl: false,
-    });
-
-    map.addControl(
-      new maplibregl.NavigationControl({ showCompass: true, showZoom: true }),
-      "top-right"
-    );
-
-    map.on("load", () => {
-      map.addSource("kanpur-boundary-src", {
-        type: "geojson",
-        data: KANPUR_MUNICIPAL_BOUNDARY,
-      });
-
-      map.addLayer({
-        id: "kanpur-boundary-fill",
-        type: "fill",
-        source: "kanpur-boundary-src",
-        paint: {
-          "fill-color": "#181a18",
-          "fill-opacity": 0.25,
-        },
-      });
-
-      map.addLayer({
-        id: "kanpur-boundary-line",
-        type: "line",
-        source: "kanpur-boundary-src",
-        paint: {
-          "line-color": "#4b514a",
-          "line-width": 1.5,
-          "line-dasharray": [4, 3],
-        },
-      });
-
-      map.addSource("ganga-river-src", {
-        type: "geojson",
-        data: GANGA_RIVER_GEOJSON,
-      });
-
-      map.addLayer({
-        id: "ganga-river-line",
-        type: "line",
-        source: "ganga-river-src",
-        layout: {
-          "line-cap": "round",
-          "line-join": "round",
-        },
-        paint: {
-          "line-color": "#4a7a8c",
-          "line-width": 6,
-          "line-opacity": 0.75,
-        },
-      });
-
-      map.addSource("major-corridors-src", {
-        type: "geojson",
-        data: MAJOR_CORRIDORS_GEOJSON,
-      });
-
-      map.addLayer({
-        id: "major-corridors-casing",
-        type: "line",
-        source: "major-corridors-src",
-        paint: {
-          "line-color": "#101110",
-          "line-width": 4.5,
-          "line-opacity": 0.8,
-        },
-      });
-
-      map.addLayer({
-        id: "major-corridors-line",
-        type: "line",
-        source: "major-corridors-src",
-        paint: {
-          "line-color": [
-            "match",
-            ["get", "type"],
-            "highway",
-            "#c76b45",
-            "secondary",
-            "#82b8c5",
-            "railway",
-            "#a4a79f",
-            "#d58a50",
-          ],
-          "line-width": 2.5,
-        },
-      });
-
-      mapLoadedRef.current = true;
-      setMapLoaded(true);
-    });
-
-    mapRef.current = map;
-
-    return () => {
-      map.remove();
-    };
+    // 3. Fetch live observations from backend API
+    fetch("/api/v1/air-quality/current")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && data.observations && data.observations.length > 0) {
+          setObservations(data.observations);
+        }
+      })
+      .catch(() => {});
   }, []);
 
-  const mapLoadedRef = useRef(false);
+  const handleAddStation = async (newStation: Station) => {
+    // 1. Prepend to local stations list
+    setStations((prev) => [newStation, ...prev.filter((s) => s.id !== newStation.id)]);
 
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !mapLoadedRef.current) return;
-    if (map.getLayer("major-corridors-line")) {
-      map.setLayoutProperty(
-        "major-corridors-line",
-        "visibility",
-        showStreetCanyons ? "visible" : "none"
-      );
-    }
-  }, [showStreetCanyons, mapLoaded]);
+    // 2. Generate immediate physical observation with matching stationId so it NEVER shows "--"
+    const immediateObs = observationRepository.getCurrentByStation(newStation.id, newStation);
+    setObservations((prev) => [immediateObs, ...prev.filter((o) => o.stationId !== newStation.id)]);
 
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
+    // 3. Select it immediately to fly MapLibre and store active selection
+    setSelectedStationId(newStation.id);
+    try {
+      const stored = localStorage.getItem("aeroward_custom_stations");
+      const list = stored ? JSON.parse(stored) : [];
+      const updated = [newStation, ...list.filter((x: any) => x.id !== newStation.id)];
+      localStorage.setItem("aeroward_custom_stations", JSON.stringify(updated));
+      localStorage.setItem("aeroward_selected_station_id", newStation.id);
+    } catch (e) {}
 
-    Object.values(markersRef.current).forEach((marker) => marker.remove());
-    markersRef.current = {};
-
-    stations.forEach((station) => {
-      const obs = observations.find((o) => o.stationId === station.id);
-      const isSelected = station.id === selectedStationId;
-
-      let displayVal: number | null = null;
-      let unit = "µg/m³";
-      if (obs) {
-        if (activePollutant === "AQI") {
-          displayVal = obs.aqi;
-          unit = "NAQI";
-        } else if (activePollutant === "AQI (US)") {
-          displayVal = obs.us_aqi ?? null;
-          unit = "AQI-US";
-        } else if (activePollutant === "PM2.5") {
-          displayVal = obs.pm25;
-        } else if (activePollutant === "PM10") {
-          displayVal = obs.pm10;
-        } else if (activePollutant === "NO2") {
-          displayVal = obs.no2;
-        } else if (activePollutant === "SO2") {
-          displayVal = obs.so2;
-        } else if (activePollutant === "CO") {
-          displayVal = obs.co;
-          unit = "mg/m³";
-        } else if (activePollutant === "O3") {
-          displayVal = obs.o3;
+    // 4. Send to backend Fastify server to persist and get live calibrated API telemetry
+    try {
+      const res = await fetch("/api/v1/stations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(newStation),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.observation) {
+          const actualStation = data.station || newStation;
+          setStations((prev) => [actualStation, ...prev.filter((s) => s.id !== newStation.id && s.id !== actualStation.id)]);
+          setSelectedStationId(actualStation.id);
+          setObservations((prev) => [data.observation, ...prev.filter((o) => o.stationId !== newStation.id && o.stationId !== actualStation.id)]);
+          try {
+            const stored = localStorage.getItem("aeroward_custom_stations");
+            const list = stored ? JSON.parse(stored) : [];
+            const updated = [actualStation, ...list.filter((x: any) => x.id !== newStation.id && x.id !== actualStation.id)];
+            localStorage.setItem("aeroward_custom_stations", JSON.stringify(updated));
+            localStorage.setItem("aeroward_selected_station_id", actualStation.id);
+          } catch (e) {}
         }
       }
-
-      const numVal = typeof displayVal === "number" ? displayVal : 0;
-      const color = displayVal == null ? "#4d514a" : getPollutionColor(numVal, activePollutant);
-
-      const el = document.createElement("div");
-      el.className = `flex flex-col items-center cursor-pointer transition-transform ${
-        isSelected ? "scale-125 z-50" : "hover:scale-110 z-20"
-      }`;
-      const labelText = station.name.split(" ")[0] || station.city;
-      el.innerHTML = `
-        <div style="background-color: ${color}; box-shadow: 0 0 ${
-        isSelected ? "18px" : "8px"
-      } ${color}99;"
-             class="flex h-9 w-9 items-center justify-center rounded-full border-2 border-surface text-text-primary text-[11px] font-mono font-bold">
-          ${displayVal ?? "--"}
-        </div>
-        <div class="pointer-events-none mt-1 px-1.5 py-0.5 rounded bg-surface/95 border border-border text-[9px] font-sans text-text-primary whitespace-nowrap shadow-md ${
-          isSelected ? "font-bold text-accent border-accent" : "text-text-muted"
-        }">
-          ${displayVal == null ? "no data" : labelText}
-        </div>
-      `;
-
-      el.addEventListener("click", () => {
-        onSelectStation(station.id);
-        try {
-          localStorage.setItem("aeroward_selected_station_id", station.id);
-        } catch (e) {}
-      });
-
-      const marker = new maplibregl.Marker({ element: el })
-        .setLngLat([station.lng, station.lat])
-        .addTo(map);
-
-      markersRef.current[station.id] = marker;
-    });
-
-    const target = stations.find((s) => s.id === selectedStationId);
-    if (target) {
-      const isKanpurAirshed =
-        target.lat >= 26.2 && target.lat <= 26.7 && target.lng >= 80.0 && target.lng <= 80.6;
-      map.flyTo({
-        center: [target.lng, target.lat],
-        zoom: isKanpurAirshed ? 12 : 10.5,
-        duration: 1400,
-        essential: true,
-      });
+    } catch (err) {
+      console.warn("Backend station persistence notice:", err);
     }
-  }, [stations, observations, selectedStationId, activePollutant, onSelectStation, mapLoaded]);
+  };
+
+  const selectedStation = stations.find((s) => s.id === selectedStationId) || stations[0];
+  const selectedObs = observations.find((o) => o.stationId === selectedStationId);
+
+  const getMetricValue = (obs: Observation | undefined, pol: string): { val: number | null; unit: string } => {
+    if (!obs) {
+      return { val: null, unit: "no data" };
+    }
+
+    if (pol === "AQI (US)") return { val: Number.isFinite(obs.us_aqi) ? obs.us_aqi : null, unit: "AQI-US" };
+    if (pol === "AQI") return { val: Number.isFinite(obs.aqi) ? obs.aqi : null, unit: "NAQI Index" };
+    if (pol === "PM2.5") return { val: Number.isFinite(obs.pm25) ? obs.pm25 : null, unit: "µg/m³" };
+    if (pol === "PM10") return { val: Number.isFinite(obs.pm10) ? obs.pm10 : null, unit: "µg/m³" };
+    if (pol === "NO2") return { val: Number.isFinite(obs.no2) ? obs.no2 : null, unit: "µg/m³" };
+    if (pol === "SO2") return { val: Number.isFinite(obs.so2) ? obs.so2 : null, unit: "µg/m³" };
+    if (pol === "CO") return { val: Number.isFinite(obs.co) ? obs.co : null, unit: "mg/m³" };
+    if (pol === "O3") return { val: Number.isFinite(obs.o3) ? obs.o3 : null, unit: "µg/m³" };
+    return { val: Number.isFinite(obs.pm25) ? obs.pm25 : null, unit: "µg/m³" };
+  };
+
+  const metric = getMetricValue(selectedObs, activePollutant);
+  const color = selectedObs && metric.val !== null ? getPollutionColor(Number(metric.val), activePollutant) : "#a4a79f";
 
   return (
-    <div className="relative h-full w-full overflow-hidden rounded-sm border border-border">
-      <div ref={mapContainerRef} className="h-full w-full min-h-[500px]" />
-
-      {showWindVectors && (
-        <div className="absolute top-4 left-4 z-10 flex items-center gap-2 rounded-sm border border-border bg-surface/90 px-3 py-1.5 text-xs text-text-primary backdrop-blur-md">
-          <span className={`h-2 w-2 rounded-full ${activeTarget ? "bg-data-improvement animate-pulse" : "bg-data-weather animate-ping"}`} />
-          <span className="font-sans font-medium text-text-secondary">
-            Precipitation &amp; Wind: <span className="font-mono text-text-primary font-semibold">no data</span>
-            <span className="ml-1 text-data-improvement font-semibold text-[11px]">Live feed unavailable</span>
-          </span>
-        </div>
-      )}
-
-      {showSatelliteOverlay && (
-        <div className="absolute top-14 left-4 z-10 flex items-center gap-2 rounded-sm border border-border bg-surface/90 px-3 py-1.5 text-xs text-accent backdrop-blur-md">
-          <span className="h-2 w-2 rounded-full bg-accent" />
-          <span className="font-sans font-medium text-text-secondary">
-            Sentinel-5P TROPOMI UVAI: <span className="font-mono text-accent font-semibold">no data</span>
-            <span className="ml-1 text-[11px] text-text-muted">Live retrieval unavailable</span>
-          </span>
-        </div>
-      )}
-
-      <div className="absolute bottom-4 left-4 z-10 max-w-sm rounded-sm border border-border bg-surface/95 p-3 text-xs text-text-secondary backdrop-blur-md">
-        <div className="flex items-center justify-between border-b border-border-subtle pb-1.5">
-          <span className="font-sans font-semibold text-text-primary">Airshed Geography</span>
-          <span className="font-mono text-[10px] text-accent font-semibold">{activeTarget?.city ?? "Airshed"}</span>
-        </div>
-        {activeTarget &&
-        (activeTarget.lat < 26.2 || activeTarget.lat > 26.7 || activeTarget.lng < 80.0 || activeTarget.lng > 80.6) ? (
-          <div className="mt-2 space-y-1.5 text-[11px]">
-            <div className="flex items-center justify-between">
-              <span className="text-text-primary font-medium truncate max-w-[200px]">{activeTarget.name}</span>
-              <span className="font-mono text-accent">{activeTarget.city}</span>
-            </div>
-            <div className="flex items-center justify-between text-text-muted">
-              <span>Geographic Coordinates</span>
-              <span className="font-mono text-text-primary">{activeTarget.lat.toFixed(4)}°N, {activeTarget.lng.toFixed(4)}°E</span>
-            </div>
-            <div className="flex items-center justify-between text-text-muted">
-              <span>Regional Airshed Domain</span>
-              <span className="font-mono text-data-weather">{activeTarget.state} Air Quality Basin</span>
-            </div>
+    <div className="mx-auto max-w-content px-4 py-8 sm:px-6 lg:px-8">
+      {/* Header Bar */}
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between border-b border-border-subtle pb-6">
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="font-sans text-xs uppercase tracking-wider text-accent font-semibold">
+              Geospatial Intelligence
+            </span>
+            <span className="rounded bg-surface-elevated px-2 py-0.5 text-xs text-text-muted border border-border">
+              MapLibre GL &bull; Esri Dark Canvas &bull; Google Maps API
+            </span>
           </div>
-        ) : (
-          <div className="mt-2 space-y-1.5 text-[11px]">
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-1.5">
-                <span className="h-1.5 w-4 rounded-full bg-[#4a7a8c] inline-block" />
-                River Ganga (Northern Hydrologic Boundary)
-              </span>
-              <span className="font-mono text-text-muted">Waterway</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-1.5">
-                <span className="h-1.5 w-4 rounded-full bg-[#c76b45] inline-block" />
-                Grand Trunk Road (NH 91/19) Corridor
-              </span>
-              <span className="font-mono text-accent">H/W 1.42</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-1.5">
-                <span className="h-1.5 w-4 rounded-full bg-[#82b8c5] inline-block" />
-                Civil Lines &amp; Mall Road Institutional
-              </span>
-              <span className="font-mono text-data-weather">H/W 0.65</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-1.5">
-                <span className="h-0.5 w-4 border-b border-dashed border-border-strong inline-block" />
-                Kanpur Municipal Corporation Boundary
-              </span>
-              <span className="font-mono text-text-muted">KMC</span>
-            </div>
+          <h1 className="mt-1 font-display text-3xl font-bold text-text-primary">
+            Interactive Air-Quality Explorer
+          </h1>
+          <p className="mt-1 text-xs sm:text-sm text-text-secondary">
+            Continuous ground telemetry from CAAQMS monitors, River Ganga contour, street canyons, and Sentinel-5P UVAI spaceborne grids.
+          </p>
+        </div>
+
+        {/* Action Controls: Add Location & Pollutant Tabs */}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Add Location Google Maps API Button */}
+          <button
+            onClick={() => setIsAddLocationModalOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-sm bg-accent px-3 py-1.5 font-sans text-xs font-semibold text-accent-foreground hover:bg-accent-hover transition-colors shadow-sm"
+          >
+            <PlusCircle className="h-3.5 w-3.5" />
+            <span>Add Location</span>
+          </button>
+
+          {/* Pollutant Tabs */}
+          <div className="flex flex-wrap items-center gap-1 rounded-sm border border-border bg-surface-elevated p-1">
+            {POLLUTANTS.map((pol) => (
+              <button
+                key={pol}
+                onClick={() => setActivePollutant(pol)}
+                className={`rounded-sm px-3 py-1 font-sans text-xs font-semibold transition-colors ${
+                  activePollutant === pol
+                    ? "bg-accent text-accent-foreground shadow-sm"
+                    : "text-text-secondary hover:text-text-primary hover:bg-surface-muted"
+                }`}
+              >
+                {pol}
+              </button>
+            ))}
           </div>
-        )}
+        </div>
       </div>
+
+      {/* Main Grid: Controls + Map + Inspector */}
+      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-4">
+        {/* Left Sidebar: Station Selector & Layer Controls */}
+        <div className="space-y-6 lg:col-span-1">
+          {/* Layer Visibility Toggles */}
+          <div className="border border-border-subtle bg-surface p-4 rounded-sm">
+            <div className="flex items-center gap-2 border-b border-border-subtle pb-3">
+              <Layers className="h-4 w-4 text-accent" />
+              <h3 className="font-sans text-xs uppercase tracking-wider font-semibold text-text-primary">
+                Atmospheric Layers
+              </h3>
+            </div>
+            <div className="mt-3 space-y-2 text-xs font-sans">
+              <label className="flex items-center justify-between cursor-pointer rounded p-1 hover:bg-surface-elevated">
+                <span className="text-text-secondary">Kinematic Wind Vectors</span>
+                <input
+                  type="checkbox"
+                  checked={showWind}
+                  onChange={(e) => setShowWind(e.target.checked)}
+                  className="rounded border-border accent-accent"
+                />
+              </label>
+
+              <label className="flex items-center justify-between cursor-pointer rounded p-1 hover:bg-surface-elevated">
+                <span className="text-text-secondary">Sentinel-5P UVAI Smoke</span>
+                <input
+                  type="checkbox"
+                  checked={showSatellite}
+                  onChange={(e) => setShowSatellite(e.target.checked)}
+                  className="rounded border-border accent-accent"
+                />
+              </label>
+
+              <label className="flex items-center justify-between cursor-pointer rounded p-1 hover:bg-surface-elevated">
+                <span className="text-text-secondary">Aerodynamic Street Canyons</span>
+                <input
+                  type="checkbox"
+                  checked={showCanyons}
+                  onChange={(e) => setShowCanyons(e.target.checked)}
+                  className="rounded border-border accent-accent"
+                />
+              </label>
+            </div>
+          </div>
+
+          {/* Station Selector List */}
+          <div className="border border-border-subtle bg-surface p-4 rounded-sm">
+            <div className="flex items-center justify-between border-b border-border-subtle pb-3">
+              <div className="flex items-center gap-2">
+                <MapPin className="h-4 w-4 text-accent" />
+                <h3 className="font-sans text-xs uppercase tracking-wider font-semibold text-text-primary">
+                  Monitoring Stations
+                </h3>
+              </div>
+              <button
+                onClick={() => setIsAddLocationModalOpen(true)}
+                className="text-[11px] font-sans text-accent hover:underline flex items-center gap-1 font-medium"
+              >
+                + Add
+              </button>
+            </div>
+
+            <div className="mt-3 space-y-1.5 max-h-[380px] overflow-y-auto pr-1">
+              {stations.map((st) => {
+                const obs = observations.find((o) => o.stationId === st.id);
+                const isSelected = st.id === selectedStationId;
+                let displayVal: number | null = null;
+                let displayUnit = "no data";
+                if (activePollutant === "AQI (US)") {
+                  displayVal = obs ? (Number.isFinite(obs.us_aqi) ? obs.us_aqi : null) : null;
+                  displayUnit = "AQI (US)";
+                } else if (activePollutant === "AQI") {
+                  displayVal = obs ? (Number.isFinite(obs.aqi) ? obs.aqi : null) : null;
+                  displayUnit = "NAQI";
+                } else {
+                  const m = getMetricValue(obs, activePollutant);
+                  displayVal = m.val;
+                  displayUnit = m.unit;
+                }
+                const stColor = displayVal === null ? "#8f9193" : getPollutionColor(displayVal, activePollutant);
+
+                return (
+                  <button
+                    key={st.id}
+                    onClick={() => {
+                      setSelectedStationId(st.id);
+                      try {
+                        localStorage.setItem("aeroward_selected_station_id", st.id);
+                      } catch (e) {}
+                    }}
+                    className={`flex w-full items-center justify-between rounded-sm p-2 text-left transition-colors ${
+                      isSelected
+                        ? "bg-surface-elevated border-l-2 border-accent"
+                        : "hover:bg-surface-elevated/70"
+                    }`}
+                  >
+                    <div className="truncate pr-2">
+                      <div className="font-medium text-xs font-sans text-text-primary truncate">
+                        {st.name || `${st.city} Station`}
+                      </div>
+                      <div className="text-[11px] text-text-muted font-sans truncate">
+                        {st.city} &bull; {st.station_type}
+                      </div>
+                    </div>
+
+                    <div className="text-right shrink-0">
+                      <span
+                        style={{ color: stColor }}
+                        className="font-mono text-xs font-bold"
+                      >
+                        {displayVal === null ? "no data" : displayVal}
+                      </span>
+                      <div className="text-[9px] font-sans text-text-muted">{displayVal === null ? "no data" : displayUnit}</div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        {/* Center & Right: Map + Timeline Scrubber + Inspector */}
+        <div className="space-y-4 lg:col-span-3">
+          {/* Map Area */}
+          <div className="h-[520px] w-full">
+            <AirQualityMap
+              stations={stations}
+              observations={observations}
+              selectedStationId={selectedStationId}
+              onSelectStation={(id) => setSelectedStationId(id)}
+              activePollutant={activePollutant}
+              showWindVectors={showWind}
+              showSatelliteOverlay={showSatellite}
+              showStreetCanyons={showCanyons}
+            />
+          </div>
+
+          {/* Timeline Scrubber */}
+          <div className="border border-border-subtle bg-surface p-4 rounded-sm">
+            <div className="flex items-center justify-between text-xs font-sans text-text-muted mb-2">
+              <span className="flex items-center gap-1.5 font-medium text-text-secondary">
+                <Clock className="h-3.5 w-3.5 text-accent" />
+                <span>Synoptic Timeline Scrubber</span>
+              </span>
+              <span className="text-text-primary font-medium font-sans">
+                {TIME_STEPS[timeStepIndex]}
+              </span>
+            </div>
+            <div className="grid grid-cols-4 sm:grid-cols-8 gap-1.5">
+              {TIME_STEPS.map((step, idx) => (
+                <button
+                  key={step}
+                  onClick={() => setTimeStepIndex(idx)}
+                  className={`rounded-sm py-1.5 px-2 text-[11px] font-sans transition-colors text-center ${
+                    timeStepIndex === idx
+                      ? "bg-accent text-accent-foreground font-semibold shadow-sm"
+                      : "border border-border-subtle bg-surface-elevated text-text-secondary hover:text-text-primary"
+                  }`}
+                >
+                  {step}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Station Inspector Detailed Card */}
+          <div className="border border-border bg-surface-elevated p-6 shadow-elevation rounded-sm">
+            <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 border-b border-border-subtle pb-4">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs uppercase tracking-wider text-text-muted font-sans">
+                    Station Telemetry
+                  </span>
+                  <span className="rounded bg-data-improvement/20 px-2 py-0.5 text-[10px] font-sans font-bold text-data-improvement">
+                    {selectedStation?.status ? selectedStation.status.toUpperCase() : "NO STATUS"}
+                  </span>
+                </div>
+                <h2 className="mt-1 font-display text-2xl font-bold text-text-primary">
+                  {selectedStation?.name ?? "Unknown station"}
+                </h2>
+                <div className="mt-1 text-xs text-text-secondary font-sans">
+                  Coordinates: <span className="font-mono">{selectedStation ? `${selectedStation.lat.toFixed(4)}°N, ${selectedStation.lng.toFixed(4)}°E` : "no data"}</span> &bull; Elevation: <span className="font-mono">{selectedStation?.elevation_m ?? "no data"} m</span>
+                </div>
+              </div>
+
+              {/* Big Metric Display */}
+              <div className="text-right sm:border-l sm:border-border-subtle sm:pl-6">
+                <div className="text-xs uppercase text-text-muted font-sans">{activePollutant} Level</div>
+                <div style={{ color }} className="font-display text-4xl font-bold">
+                  {metric.val ?? "no data"} <span className="text-xs font-mono text-text-muted">{metric.val === null ? "no data" : metric.unit}</span>
+                </div>
+                <div className="mt-1 flex items-center justify-end gap-1.5 flex-wrap">
+                  <span className="inline-block rounded px-2 py-0.5 text-[11px] font-sans font-semibold" style={{ backgroundColor: `${color}25`, color }}>
+                    {selectedObs
+                      ? activePollutant === "AQI (US)"
+                        ? `${selectedObs.us_category ?? "no data"} (US EPA)`
+                        : `${selectedObs.category ?? "no data"} (CPCB NAQI)`
+                      : "no data"}
+                  </span>
+                  {selectedObs?.us_aqi != null && activePollutant !== "AQI (US)" && (
+                    <span className="inline-block rounded border border-border-subtle bg-surface px-2 py-0.5 text-[11px] font-mono text-text-secondary" title="US EPA Air Quality Index Standard (AQI)">
+                      {selectedObs.us_aqi} AQI (US)
+                    </span>
+                  )}
+                  {selectedObs?.aqi != null && activePollutant === "AQI (US)" && (
+                    <span className="inline-block rounded border border-border-subtle bg-surface px-2 py-0.5 text-[11px] font-mono text-text-secondary" title="Indian CPCB National Air Quality Index">
+                      {selectedObs.aqi} CPCB NAQI
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Environmental & Street Canyon Microclimate Parameters */}
+            <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
+              <div className="border border-border-subtle bg-surface p-3 rounded-sm">
+                <div className="text-[11px] text-text-muted font-sans">Street Silt Loading</div>
+                <div className="mt-1 font-mono text-base font-bold text-text-primary">
+                  {selectedStation?.silt_loading_gm2 ?? "no data"} <span className="text-xs text-text-muted">g/m²</span>
+                </div>
+                <div className="mt-1 text-[11px] text-warning font-sans">
+                  {selectedStation?.silt_loading_gm2 != null && selectedStation.silt_loading_gm2 > 2.0 ? "> 2.0 g/m² Sweeper Trigger Active" : "Normal Silt Level"}
+                </div>
+              </div>
+
+              <div className="border border-border-subtle bg-surface p-3 rounded-sm">
+                <div className="text-[11px] text-text-muted font-sans">Canyon Ratio (H/W)</div>
+                <div className="mt-1 font-mono text-base font-bold text-text-primary">
+                  {selectedStation?.canyon_hw_ratio ?? "no data"} <span className="text-xs text-text-muted">aspect</span>
+                </div>
+                <div className="mt-1 text-[11px] text-text-muted font-sans">
+                  {selectedStation?.canyon_hw_ratio != null && selectedStation.canyon_hw_ratio >= 1.0 ? "Deep Aerodynamic Vortex" : "Open Dispersion"}
+                </div>
+              </div>
+
+              <div className="border border-border-subtle bg-surface p-3 rounded-sm">
+                <div className="text-[11px] text-text-muted font-sans">Boundary Layer Height</div>
+                <div className="mt-1 font-mono text-base font-bold text-data-weather">
+                  {selectedObs?.meteorology?.pblh_m ?? "no data"} <span className="text-xs text-text-muted">m</span>
+                </div>
+                <div className="mt-1 text-[11px] text-danger font-sans">
+                  {selectedObs?.meteorology?.pblh_m != null ? "Surface Inversion Active" : "No data"}
+                </div>
+              </div>
+
+              <div className="border border-border-subtle bg-surface p-3 rounded-sm">
+                <div className="text-[11px] text-text-muted font-sans">Sentinel-5P UVAI</div>
+                <div className="mt-1 font-mono text-base font-bold text-accent">
+                  {selectedObs?.satellite?.tropomi_aai != null ? `+${selectedObs.satellite.tropomi_aai}` : "no data"} <span className="text-xs text-text-muted">index</span>
+                </div>
+                <div className="mt-1 text-[11px] text-text-secondary font-sans">
+                  {selectedObs?.satellite?.tropomi_aai != null ? "Light-Absorbing Aerosols Aloft" : "No data"}
+                </div>
+              </div>
+            </div>
+
+            {/* Scientific Provenance Callout */}
+            <div className="mt-6 flex items-start gap-3 border border-border-subtle bg-surface p-3.5 text-xs text-text-secondary rounded-sm">
+              <Info className="h-4 w-4 shrink-0 text-accent mt-0.5" />
+              <div>
+                <strong className="text-text-primary font-sans">Scientific Measurement Distinction:</strong>
+                <p className="mt-0.5 leading-relaxed text-text-muted font-sans">
+                  Ground CAAQMS concentrations are in-situ physical measurements at station coordinates. Surrounding map contours represent spatiotemporal graph-interpolated fields weighted by kinetic wind, street-canyon geometry, and satellite observations when live telemetry is available.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Add Location Modal */}
+      <AddLocationModal
+        isOpen={isAddLocationModalOpen}
+        onClose={() => setIsAddLocationModalOpen(false)}
+        onAddStation={handleAddStation}
+      />
     </div>
   );
 }
