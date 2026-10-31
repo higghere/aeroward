@@ -1,293 +1,404 @@
-import { Station, Observation } from "../repositories/dataStore.js";
-import { calculateAQI, calculateUSAQI } from "../utils/aqi.js";
-import { observationRepository } from "../repositories/observationRepository.js";
+import { FastifyRequest, FastifyReply } from "fastify";
 import { config } from "../config/index.js";
+import { stationRepository } from "../repositories/stationRepository.js";
+import { observationRepository } from "../repositories/observationRepository.js";
+import { generateShortTermForecast } from "../forecasting/shortTermModel.js";
+import { generateLongRangeForecast } from "../forecasting/longRangeModel.js";
+import { sourceApportionmentService } from "../analysis/sourceApportionmentService.js";
+import { meteorologyService } from "../analysis/meteorologyService.js";
+import { mitigationService } from "../recommendations/mitigationService.js";
+import { routingEngine } from "../geospatial/routingEngine.js";
+import { scenarioEngine } from "../scenarios/scenarioEngine.js";
+import { DATA_SOURCES_REGISTRY, Observation } from "../repositories/dataStore.js";
+import { liveAirQualityService } from "../services/liveAirQualityService.js";
+import { geocodingService, CITY_GEO_INDEX } from "../services/geocodingService.js";
+import {
+  LocationQuerySchema,
+  HistoryQuerySchema,
+  ForecastQuerySchema,
+  RouteComparisonSchema,
+  ScenarioSimulationSchema,
+} from "../schemas/index.js";
 
-export class LiveAirQualityService {
-  /**
-   * Fetches live air quality observations from OpenWeather Air Pollution API or Copernicus CAMS,
-   * calibrated against local street-canyon aerodynamics and boundary layer physics.
-   */
-  async getLiveObservation(station: Station): Promise<Observation> {
-    const lat = station.lat;
-    const lng = station.lng;
-    const now = new Date();
-    const hour = now.getHours();
-    const isNocturnalInversion = hour < 9 || hour >= 21;
+export class AirQualityController {
+  async getHealth(req: FastifyRequest, reply: FastifyReply) {
+    return reply.send({
+      status: "healthy",
+      service: "AeroWard Environmental Intelligence Engine",
+      version: "1.0.0",
+      uptimeSeconds: Math.floor(process.uptime()),
+      timestamp: new Date().toISOString(),
+      nodeVersion: process.version,
+      architecture: "Node.js + Fastify + TypeScript (Zero Python Dependency)",
+    });
+  }
 
-    // 1. Gold-Standard Tier: AQICN / WAQI Official CAAQMS & CPCB Ground Monitor Ingestion
-    const aqicnToken = config.AQICN_API_TOKEN || "ea9b52444d4cbb7716ee640b9ba30fef80cd9f2e";
-    if (aqicnToken) {
-      try {
-        const cityClean = (station.city || station.name || "").split(",")[0].trim().toLowerCase();
-        let waqiUrl = `https://api.waqi.info/feed/${encodeURIComponent(cityClean)}/?token=${aqicnToken}`;
+  async getStations(req: FastifyRequest, reply: FastifyReply) {
+    const stations = await stationRepository.getAll();
+    return reply.send({ count: stations.length, stations });
+  }
 
-        const aqicnController = new AbortController();
-        const aqicnTimeout = setTimeout(() => aqicnController.abort(), 2800);
-        let aqicnRes = await fetch(waqiUrl, { signal: aqicnController.signal });
-        clearTimeout(aqicnTimeout);
+  async postStation(req: FastifyRequest, reply: FastifyReply) {
+    const body = req.body as any;
+    if (!body || !body.name || body.lat === undefined || body.lng === undefined) {
+      return reply.status(400).send({ error: "Missing required station fields: name, lat, lng" });
+    }
 
-        let aqicnData = (await aqicnRes.json()) as any;
+    let resolvedLat = Number(body.lat);
+    let resolvedLng = Number(body.lng);
+    let resolvedCity = body.city ?? "Custom Location";
+    let resolvedState = body.state ?? "Uttar Pradesh";
 
-        // If direct city feed misses, query WAQI search by station/city name
-        if (aqicnData.status !== "ok" || typeof aqicnData.data?.aqi !== "number") {
-          const sController = new AbortController();
-          const sTimeout = setTimeout(() => sController.abort(), 2800);
-          const sRes = await fetch(
-            `https://api.waqi.info/search/?keyword=${encodeURIComponent(cityClean)}&token=${aqicnToken}`,
-            { signal: sController.signal }
-          );
-          clearTimeout(sTimeout);
-          const sData = (await sRes.json()) as any;
+    const isKanpurDefaultCoords = Math.abs(resolvedLat - 26.475) < 0.05 && Math.abs(resolvedLng - 80.32) < 0.05;
+    const isNamedNonKanpur = !body.name.toLowerCase().includes("kanpur") && !resolvedCity.toLowerCase().includes("kanpur");
 
-          if (sData.status === "ok" && Array.isArray(sData.data) && sData.data.length > 0) {
-            const topUid = sData.data[0].uid;
-            const uController = new AbortController();
-            const uTimeout = setTimeout(() => uController.abort(), 2800);
-            const uRes = await fetch(`https://api.waqi.info/feed/@${topUid}/?token=${aqicnToken}`, {
-              signal: uController.signal,
-            });
-            clearTimeout(uTimeout);
-            aqicnData = (await uRes.json()) as any;
-          }
-        }
-
-        if (aqicnData.status === "ok" && aqicnData.data && typeof aqicnData.data.aqi === "number") {
-          const d = aqicnData.data;
-
-          // Staleness Guard: Check if station timestamp is fresh within 24 hours
-          const recTimestamp = d.time?.v ? d.time.v * 1000 : (d.time?.iso ? new Date(d.time.iso).getTime() : 0);
-          const ageHours = recTimestamp > 0 ? (now.getTime() - recTimestamp) / (1000 * 3600) : Infinity;
-
-          // Only accept fresh telemetry from active monitors (reject offline stations frozen months ago)
-          if (ageHours <= 24) {
-            const aqi = d.aqi;
-            const pm25 = Math.round(d.iaqi?.pm25?.v || (aqi > 50 ? aqi * 0.7 : 25));
-            const pm10 = Math.round(d.iaqi?.pm10?.v || pm25 * 1.5);
-            const no2 = Math.round(d.iaqi?.no2?.v || 28);
-            const so2 = Math.round(d.iaqi?.so2?.v || 12);
-            const co = Number((d.iaqi?.co?.v || 1.35).toFixed(2));
-            const o3 = Math.round(d.iaqi?.o3?.v || 45);
-
-            let category = "Good";
-            if (aqi > 400) category = "Severe";
-            else if (aqi > 300) category = "Very Poor";
-            else if (aqi > 200) category = "Poor";
-            else if (aqi > 100) category = "Moderate";
-            else if (aqi > 50) category = "Satisfactory";
-
-            const domRaw = (d.dominentpol || "pm25").toLowerCase();
-            const dominantPollutant = domRaw.includes("pm25")
-              ? "PM2.5"
-              : domRaw.includes("pm10")
-              ? "PM10"
-              : domRaw.includes("no2")
-              ? "NO2"
-              : domRaw.includes("o3")
-              ? "O3"
-              : "PM2.5";
-
-            const usa = calculateUSAQI(pm25);
-
-            return {
-              id: `obs_${station.id}_${now.getTime()}`,
-              stationId: station.id,
-              recordedAt: now.toISOString(),
-              pm25,
-              pm10,
-              no2,
-              so2,
-              co,
-              o3,
-              aqi,
-              category,
-              us_aqi: usa.usAqi,
-              us_category: usa.usCategory,
-              dominantPollutant,
-              dataQuality: "validated",
-              meteorology: {
-                temp_c: d.iaqi?.t?.v ?? Number((24 - (isNocturnalInversion ? 5 : 0)).toFixed(1)),
-                rh_pct: d.iaqi?.h?.v ? Math.round(d.iaqi.h.v) : (isNocturnalInversion ? 78 : 46),
-                wind_speed_ms: d.iaqi?.w?.v ? Number(d.iaqi.w.v.toFixed(1)) : (isNocturnalInversion ? 1.1 : 2.6),
-                wind_dir_deg: 295,
-                pblh_m: isNocturnalInversion ? 320 : 1240,
-                inversion_strength_c100m: isNocturnalInversion ? 2.8 : 0.4,
-                solar_rad_wm2: isNocturnalInversion ? 0 : 520,
-              },
-              satellite: {
-                tropomi_aai: 1.68,
-                aod_550nm: 0.82,
-                tropomi_no2_column_umol_m2: 245.0,
-              },
-            };
-          }
-        }
-      } catch (aqicnErr) {
-        // Fall through to OpenWeather & Open-Meteo
+    if (isKanpurDefaultCoords && isNamedNonKanpur) {
+      const geo = await geocodingService.resolveLocation(body.name || resolvedCity);
+      if (geo && (Math.abs(geo.lat - 26.475) > 0.1 || Math.abs(geo.lng - 80.32) > 0.1)) {
+        resolvedLat = geo.lat;
+        resolvedLng = geo.lng;
+        resolvedCity = geo.city || resolvedCity;
+        resolvedState = geo.state || resolvedState;
       }
     }
 
-    // 2. Secondary Ingestion Tier: OpenWeather Air Pollution API (aeroweather / default keys)
-    const primaryKey = config.OPENWEATHER_API_KEY || "cf67e2ec75f8211e03f192b54d43271d";
-    const fallbackKeys = ["cf67e2ec75f8211e03f192b54d43271d", "b8461e9105c7fe30a045c13f8da6c68b"];
-    const candidateKeys = Array.from(new Set([primaryKey, ...fallbackKeys])).filter(Boolean);
+    const newStation = {
+      id: body.id || `custom_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      name: body.name,
+      city: resolvedCity,
+      state: resolvedState,
+      lat: resolvedLat,
+      lng: resolvedLng,
+      elevation_m: Number(body.elevation_m) || 125,
+      station_type: (body.station_type || "Micro_Sensor") as any,
+      operator: body.operator || "Citizen Science / Custom Station",
+      status: "active" as const,
+      silt_loading_gm2: Number(body.silt_loading_gm2) || 4.2,
+      canyon_hw_ratio: Number(body.canyon_hw_ratio) || 1.1,
+      canyon_btr: Number(body.canyon_btr) || 0.7,
+    };
+    await stationRepository.addStation(newStation);
+    const observation = await liveAirQualityService.getLiveObservation(newStation);
+    return reply.status(201).send({
+      message: "Station added successfully",
+      station: newStation,
+      observation,
+    });
+  }
 
-    for (const openWeatherKey of candidateKeys) {
+  async searchPlaces(req: FastifyRequest, reply: FastifyReply) {
+    const query = req.query as any;
+    const input = (query.input || "").trim();
+    if (!input || input.length < 2) {
+      return reply.send({ suggestions: [] });
+    }
+
+    const apiKey = config.GOOGLE_MAPS_API_KEY;
+    if (apiKey) {
       try {
-        const owController = new AbortController();
-        const owTimeout = setTimeout(() => owController.abort(), 2800);
-        const owUrl = `http://api.openweathermap.org/data/2.5/air_pollution?lat=${lat}&lon=${lng}&appid=${openWeatherKey}`;
-        const owRes = await fetch(owUrl, { signal: owController.signal });
-        clearTimeout(owTimeout);
+        const googleRes = await fetch("https://places.googleapis.com/v1/places:autocomplete", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": apiKey,
+          },
+          body: JSON.stringify({
+            input,
+            includedRegionCodes: ["in"],
+          }),
+        });
 
-        if (owRes.ok) {
-          const owData = (await owRes.json()) as any;
-          const cur = owData.list?.[0]?.components;
-          if (cur && cur.pm2_5 !== undefined) {
-            const scity = (station.city || "").toLowerCase();
-            const sname = (station.name || "").toLowerCase();
-            const isDoonValley =
-              scity.includes("dehradun") ||
-              sname.includes("dehradun") ||
-              scity.includes("rishikesh") ||
-              (lat >= 29.8 && lat <= 30.6 && lng >= 77.8 && lng <= 78.6);
-
-            // Regional Topography Calibration:
-            // High Himalayan / foothill valleys experience nocturnal katabatic drainage (clean air from mountain heights),
-            // whereas coarse OpenWeather cells blend in the industrial Gangetic plain.
-            const elevationFactor = isDoonValley ? 0.22 : 1.0;
-            const pm25 = Math.round((Number(cur.pm2_5) || 25) * elevationFactor);
-            const pm10 = Math.round((Number(cur.pm10) || pm25 * 1.8) * (isDoonValley ? 0.32 : 1.0));
-            const no2 = Math.round(Number(cur.no2) || 28);
-            const so2 = Math.round(Number(cur.so2) || 12);
-            const co = Number(((Number(cur.co) || 350) / 1000).toFixed(2)); // ug/m3 -> mg/m3
-            const o3 = Math.round(Number(cur.o3) || 45);
-
-            const aqiResult = calculateAQI({ pm25, pm10, no2, so2, co, o3 });
-            const usa = calculateUSAQI(pm25);
-
-            return {
-              id: `obs_${station.id}_${now.getTime()}`,
-              stationId: station.id,
-              recordedAt: now.toISOString(),
-              pm25,
-              pm10,
-              no2,
-              so2,
-              co,
-              o3,
-              aqi: aqiResult.aqi,
-              category: aqiResult.category,
-              us_aqi: usa.usAqi,
-              us_category: usa.usCategory,
-              dominantPollutant: aqiResult.dominantPollutant,
-              dataQuality: "validated",
-              meteorology: {
-                temp_c: Number((24 - (isNocturnalInversion ? 5 : 0)).toFixed(1)),
-                rh_pct: isNocturnalInversion ? 78 : 46,
-                wind_speed_ms: isNocturnalInversion ? 1.1 : 2.6,
-                wind_dir_deg: 295,
-                pblh_m: isNocturnalInversion ? 320 : 1240,
-                inversion_strength_c100m: isNocturnalInversion ? 2.8 : 0.4,
-                solar_rad_wm2: isNocturnalInversion ? 0 : 520,
-              },
-              satellite: {
-                tropomi_aai: 1.68,
-                aod_550nm: 0.82,
-                tropomi_no2_column_umol_m2: 245.0,
-              },
-            };
+        if (googleRes.ok) {
+          const data = (await googleRes.json()) as any;
+          const rawSuggestions = data.suggestions || [];
+          if (rawSuggestions.length > 0) {
+            const suggestions = rawSuggestions.map((s: any) => ({
+              placeId: s.placePrediction?.placeId,
+              name: s.placePrediction?.structuredFormat?.mainText?.text || s.placePrediction?.text?.text,
+              formattedAddress: s.placePrediction?.text?.text,
+            }));
+            return reply.send({ suggestions });
           }
         }
-      } catch (owErr) {
-        // Continue to try next key or fall through to Open-Meteo
+      } catch (err) {
+        // Fallback to local index
       }
+    }
+
+    const queryLower = input.toLowerCase();
+    const suggestions: any[] = [];
+
+    for (const [key, val] of Object.entries(CITY_GEO_INDEX)) {
+      if (key.includes(queryLower) || val.city.toLowerCase().includes(queryLower) || val.state.toLowerCase().includes(queryLower)) {
+        suggestions.push({
+          placeId: `geo_${key}`,
+          name: val.city,
+          formattedAddress: `${val.city}, ${val.state}, ${val.country}`,
+        });
+        if (suggestions.length >= 5) break;
+      }
+    }
+
+    if (suggestions.length > 0) {
+      return reply.send({ suggestions });
     }
 
     try {
-      // 3. Tertiary Ingestion Tier: Open-Meteo global Copernicus CAMS API
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 2500);
-
-      const url = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lng}&current=pm10,pm2_5,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone,us_aqi`;
-      const res = await fetch(url, { signal: controller.signal });
-      clearTimeout(timeoutId);
-
-      if (res.ok) {
-        const data = (await res.json()) as any;
-        const cur = data.current;
-
-        if (cur && cur.pm2_5 !== undefined) {
-          // Micro-environmental street canyon and silt factor calibration
-          let microFactor = 1.0;
-          if (station.silt_loading_gm2 && station.silt_loading_gm2 > 4.0) {
-            microFactor += (station.silt_loading_gm2 - 2.0) * 0.08;
-          }
-          if (station.canyon_hw_ratio && station.canyon_hw_ratio > 1.0) {
-            microFactor += (station.canyon_hw_ratio - 1.0) * 0.15;
-          }
-
-          // Regional atmospheric calibrations:
-          const scity = (station.city || "").toLowerCase();
-          const sname = (station.name || "").toLowerCase();
-          const isDoonValley = scity.includes("dehradun") || sname.includes("dehradun") || scity.includes("rishikesh") || (lat >= 29.8 && lat <= 30.6 && lng >= 77.8 && lng <= 78.6);
-          const isIGP = !isDoonValley && lat >= 24.5 && lat <= 29.5 && lng >= 75.0 && lng <= 86.5;
-          const inversionFactor = (isIGP && isNocturnalInversion) ? 1.4 : 1.0;
-
-          const totalModifier = Math.min(3.0, Math.max(0.7, microFactor * inversionFactor));
-
-          const rawPm25 = Number(cur.pm2_5) || 25;
-          const pm25 = isDoonValley ? Math.min(25, Math.round(rawPm25)) : Math.round(Math.max(12, rawPm25 * totalModifier));
-          const rawPm10 = Number(cur.pm10) || pm25 * 1.6;
-          const pm10 = isDoonValley ? Math.min(45, Math.round(rawPm10)) : Math.round(Math.max(pm25 * 1.2, rawPm10 * totalModifier));
-          const no2 = Math.round((Number(cur.nitrogen_dioxide) || 28) * (isNocturnalInversion ? 1.3 : 1.0));
-          const so2 = Math.round(Number(cur.sulphur_dioxide) || 14);
-          const co = Number(((Number(cur.carbon_monoxide) || 380) / 500).toFixed(2));
-          const o3 = Math.round(Number(cur.ozone) || (isNocturnalInversion ? 22 : 55));
-
-          const aqiResult = calculateAQI({ pm25, pm10, no2, so2, co, o3 });
-          const usa = calculateUSAQI(pm25);
-
+      const photonRes = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(input)}&limit=5`);
+      if (photonRes.ok) {
+        const pData = (await photonRes.json()) as any;
+        const features = pData.features || [];
+        const pMatches = features.map((f: any, idx: number) => {
+          const p = f.properties || {};
+          const label = [p.name, p.city, p.state, p.country].filter(Boolean).join(", ");
           return {
-            id: `obs_${station.id}_${now.getTime()}`,
-            stationId: station.id,
-            recordedAt: now.toISOString(),
-            pm25,
-            pm10,
-            no2,
-            so2,
-            co,
-            o3,
-            aqi: aqiResult.aqi,
-            category: aqiResult.category,
-            us_aqi: cur.us_aqi ? Math.round(Number(cur.us_aqi)) : usa.usAqi,
-            us_category: usa.usCategory,
-            dominantPollutant: aqiResult.dominantPollutant,
-            dataQuality: "validated",
-            meteorology: {
-              temp_c: Number((24 - (isNocturnalInversion ? 5 : 0)).toFixed(1)),
-              rh_pct: isNocturnalInversion ? 78 : 46,
-              wind_speed_ms: isNocturnalInversion ? 1.1 : 2.6,
-              wind_dir_deg: 295,
-              pblh_m: isNocturnalInversion ? 320 : 1240,
-              inversion_strength_c100m: isNocturnalInversion ? 2.8 : 0.4,
-              solar_rad_wm2: isNocturnalInversion ? 0 : 520,
-            },
-            satellite: {
-              tropomi_aai: 1.68,
-              aod_550nm: 0.82,
-              tropomi_no2_column_umol_m2: 245.0,
-            },
+            placeId: `geo_${p.city?.toLowerCase() || p.name?.toLowerCase() || idx}`,
+            name: p.name || p.city || input,
+            formattedAddress: label || `${input}, India`,
           };
+        });
+        if (pMatches.length > 0) {
+          return reply.send({ suggestions: pMatches });
+        }
+      }
+    } catch {}
+
+    return reply.send({
+      suggestions: [
+        {
+          placeId: `geo_${encodeURIComponent(input.toLowerCase())}`,
+          name: input,
+          formattedAddress: `${input}, India`,
+        },
+      ],
+    });
+  }
+
+  async getPlaceDetails(req: FastifyRequest, reply: FastifyReply) {
+    const query = req.query as any;
+    const placeId = query.placeId;
+    const fallbackQuery = query.name || query.query || "";
+    if (!placeId && !fallbackQuery) {
+      return reply.status(400).send({ error: "placeId or query is required" });
+    }
+
+    const apiKey = config.GOOGLE_MAPS_API_KEY;
+
+    try {
+      if (placeId && !placeId.startsWith("custom_") && !placeId.startsWith("geo_")) {
+        const googleRes = await fetch(
+          `https://places.googleapis.com/v1/places/${encodeURIComponent(placeId)}?fields=id,displayName,formattedAddress,location,addressComponents`,
+          {
+            headers: {
+              "Content-Type": "application/json",
+              "X-Goog-Api-Key": apiKey,
+            },
+          }
+        );
+
+        if (googleRes.ok) {
+          const data = (await googleRes.json()) as any;
+          const cityComp = data.addressComponents?.find((c: any) => c.types?.includes("locality") || c.types?.includes("administrative_area_level_2"));
+          const stateComp = data.addressComponents?.find((c: any) => c.types?.includes("administrative_area_level_1"));
+
+          if (data.location?.latitude && data.location?.longitude) {
+            return reply.send({
+              placeId: data.id,
+              name: data.displayName?.text || data.formattedAddress?.split(",")[0],
+              formattedAddress: data.formattedAddress,
+              lat: data.location.latitude,
+              lng: data.location.longitude,
+              city: cityComp ? cityComp.longText : data.displayName?.text || "Regional Node",
+              state: stateComp ? stateComp.longText : "India",
+            });
+          }
         }
       }
     } catch (err) {
-      // Graceful fallback to physics synthesis
+      // Continue to geocodingService
     }
 
-    // Physics fallback
-    return observationRepository.getCurrentByStation(station.id, station);
+    const targetString = fallbackQuery || (placeId ? placeId.replace(/^geo_/i, "").replace(/[_-]/g, " ").trim() : "India");
+    const geo = await geocodingService.resolveLocation(targetString);
+
+    return reply.send({
+      placeId: placeId || `geo_${Date.now()}`,
+      name: geo.city || geo.name,
+      formattedAddress: geo.formattedAddress,
+      lat: geo.lat,
+      lng: geo.lng,
+      city: geo.city,
+      state: geo.state,
+    });
+  }
+
+  private liveCache: { timestamp: number; data: Observation[] } | null = null;
+
+  async getCurrent(req: FastifyRequest, reply: FastifyReply) {
+    const query = LocationQuerySchema.safeParse(req.query);
+    const stationId = query.success ? query.data.stationId : (req.query as any)?.stationId;
+
+    if (stationId) {
+      const station = await stationRepository.getById(stationId);
+      if (station) {
+        const obs = await liveAirQualityService.getLiveObservation(station);
+        return reply.send(obs);
+      }
+      const obs = observationRepository.getCurrentByStation(stationId);
+      return reply.send(obs);
+    }
+
+    const now = Date.now();
+    if (this.liveCache && now - this.liveCache.timestamp < 30000) {
+      return reply.send({ count: this.liveCache.data.length, observations: this.liveCache.data });
+    }
+
+    try {
+      const stations = await stationRepository.getAll();
+      const liveObs = await Promise.all(
+        stations.map((s) => liveAirQualityService.getLiveObservation(s))
+      );
+      this.liveCache = { timestamp: now, data: liveObs };
+      return reply.send({ count: liveObs.length, observations: liveObs });
+    } catch {
+      const all = observationRepository.getAllCurrent();
+      return reply.send({ count: all.length, observations: all });
+    }
+  }
+
+  async getMapData(req: FastifyRequest, reply: FastifyReply) {
+    const geojson = observationRepository.getGeoJSON();
+    return reply.send(geojson);
+  }
+
+  async getHistory(req: FastifyRequest, reply: FastifyReply) {
+    const query = HistoryQuerySchema.safeParse(req.query);
+    const stationId = query.success && query.data.stationId ? query.data.stationId : "kanpur_iitk";
+    const days = query.success && query.data.days ? query.data.days : 30;
+
+    const history = observationRepository.getHistorical(stationId, days);
+    return reply.send({
+      stationId,
+      daysRequested: days,
+      count: history.length,
+      records: history,
+    });
+  }
+
+  async getForecasts(req: FastifyRequest, reply: FastifyReply) {
+    const query = ForecastQuerySchema.safeParse(req.query);
+    const stationId = query.success && query.data.stationId ? query.data.stationId : "kanpur_iitk";
+    const pollutant = query.success && query.data.pollutant ? query.data.pollutant : "PM2.5";
+    const horizon = (query.success && ["12h", "24h", "48h", "72h"].includes(query.data.horizon)) ? (query.data.horizon as "12h" | "24h" | "48h" | "72h") : "72h";
+
+    const forecast = generateShortTermForecast(stationId, pollutant, horizon);
+    return reply.send(forecast);
+  }
+
+  async getForecastByLocation(req: FastifyRequest<{ Params: { locationId: string } }>, reply: FastifyReply) {
+    const { locationId } = req.params;
+    const query = ForecastQuerySchema.safeParse(req.query);
+    const pollutant = query.success && query.data.pollutant ? query.data.pollutant : "PM2.5";
+    const horizon = (query.success && ["12h", "24h", "48h", "72h"].includes(query.data.horizon)) ? (query.data.horizon as "12h" | "24h" | "48h" | "72h") : "72h";
+
+    const forecast = generateShortTermForecast(locationId, pollutant, horizon);
+    return reply.send(forecast);
+  }
+
+  async getSeasonalForecast(req: FastifyRequest, reply: FastifyReply) {
+    const query = req.query as any;
+    const stationId = query.stationId || "kanpur_iitk";
+    const pollutant = query.pollutant || "PM2.5";
+    const horizonMonths = query.horizon ? parseInt(query.horizon.replace("m", ""), 10) || 7 : 7;
+
+    const seasonal = generateLongRangeForecast(stationId, pollutant, horizonMonths);
+    return reply.send(seasonal);
+  }
+
+  async getSources(req: FastifyRequest, reply: FastifyReply) {
+    const query = req.query as any;
+    const city = query.city || "Kanpur";
+    const analysis = sourceApportionmentService.getSourceAnalysis(city);
+    return reply.send(analysis);
+  }
+
+  async getWeather(req: FastifyRequest, reply: FastifyReply) {
+    const query = req.query as any;
+    const city = query.city || "Kanpur";
+    const weather = meteorologyService.getAtmosphericAnalysis(city);
+    return reply.send(weather);
+  }
+
+  async getRecommendations(req: FastifyRequest, reply: FastifyReply) {
+    const query = req.query as any;
+    const city = query.city || "Kanpur";
+    const plan = mitigationService.getPredictiveGrapPlan(city);
+    return reply.send(plan);
+  }
+
+  async postCleanerAirRoute(req: FastifyRequest, reply: FastifyReply) {
+    const body = RouteComparisonSchema.safeParse(req.body);
+    const origin = body.success ? body.data.origin : undefined;
+    const destination = body.success ? body.data.destination : undefined;
+    const mode = body.success ? body.data.mode : "walking";
+
+    const result = routingEngine.compareRoutes(
+      origin ? { lat: origin.lat, lng: origin.lng, name: origin.name || "Origin" } : undefined,
+      destination ? { lat: destination.lat, lng: destination.lng, name: destination.name || "Destination" } : undefined,
+      mode
+    );
+    return reply.send(result);
+  }
+
+  async getCleanerAirRoute(req: FastifyRequest, reply: FastifyReply) {
+    const query = req.query as any;
+    const mode = query.mode === "cycling" ? "cycling" : query.mode === "driving" ? "driving" : "walking";
+    const result = routingEngine.compareRoutes(undefined, undefined, mode);
+    return reply.send(result);
+  }
+
+  async postScenario(req: FastifyRequest, reply: FastifyReply) {
+    const body = ScenarioSimulationSchema.safeParse(req.body);
+    const params = body.success ? body.data : {
+      city: "Kanpur",
+      commercialVehicleDiversionPct: 35,
+      siltSweepingWetSuppressionPct: 50,
+      industrialFurnaceKilnModulationPct: 30,
+      biomassBurningBanEnforcementPct: 40,
+      streetVegetativeBufferPct: 25,
+    };
+
+    const result = scenarioEngine.simulate(params);
+    return reply.send(result);
+  }
+
+  async getScenario(req: FastifyRequest, reply: FastifyReply) {
+    const query = req.query as any;
+    const params = {
+      city: query.city || "Kanpur",
+      commercialVehicleDiversionPct: query.commercialVehicleDiversionPct ? parseFloat(query.commercialVehicleDiversionPct) : 35,
+      siltSweepingWetSuppressionPct: query.siltSweepingWetSuppressionPct ? parseFloat(query.siltSweepingWetSuppressionPct) : 50,
+      industrialFurnaceKilnModulationPct: query.industrialFurnaceKilnModulationPct ? parseFloat(query.industrialFurnaceKilnModulationPct) : 30,
+      biomassBurningBanEnforcementPct: query.biomassBurningBanEnforcementPct ? parseFloat(query.biomassBurningBanEnforcementPct) : 40,
+      streetVegetativeBufferPct: query.streetVegetativeBufferPct ? parseFloat(query.streetVegetativeBufferPct) : 25,
+    };
+    const result = scenarioEngine.simulate(params);
+    return reply.send(result);
+  }
+
+  async getDataSources(req: FastifyRequest, reply: FastifyReply) {
+    return reply.send({
+      count: DATA_SOURCES_REGISTRY.length,
+      dataSources: DATA_SOURCES_REGISTRY,
+    });
+  }
+
+  async getModelPerformance(req: FastifyRequest, reply: FastifyReply) {
+    return reply.send({
+      note: "No validation set available yet. Metrics intentionally omitted until a real benchmark is published.",
+      modelEvaluations: [],
+    });
   }
 }
 
-export const liveAirQualityService = new LiveAirQualityService();
+export const airQualityController = new AirQualityController();

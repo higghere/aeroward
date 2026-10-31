@@ -1,263 +1,227 @@
-export interface Station {
-  id: string;
-  name: string;
-  city: string;
-  state: string;
-  lat: number;
-  lng: number;
-  elevation_m: number;
-  station_type: "CAAQMS" | "Research_SuperSite" | "Micro_Sensor";
-  operator: string;
-  status: "active" | "maintenance" | "offline";
-  silt_loading_gm2?: number;
-  canyon_hw_ratio?: number;
-  canyon_btr?: number;
-}
+"use client";
 
-export interface Observation {
-  id: string;
-  stationId: string;
-  recordedAt: string;
-  pm25: number;
-  pm10: number;
-  no2: number;
-  so2: number;
-  co: number;
-  o3: number;
-  aqi: number;
-  category: string;
-  us_aqi?: number;
-  us_category?: string;
-  dominantPollutant: string;
-  dataQuality: "validated" | "raw" | "flagged" | "synthetic";
-  meteorology: {
-    temp_c: number;
-    rh_pct: number;
-    wind_speed_ms: number;
-    wind_dir_deg: number;
-    pblh_m: number;
-    inversion_strength_c100m: number;
-    solar_rad_wm2: number;
+import { useState, useEffect, useMemo } from "react";
+import {
+  Clock,
+  MapPin,
+  Flame,
+  CloudRain,
+  ThermometerSnowflake,
+  Wind,
+  FileSpreadsheet,
+  Calendar,
+  AlertTriangle,
+  Info,
+} from "lucide-react";
+import {
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  Tooltip,
+  CartesianGrid,
+  ReferenceLine,
+} from "recharts";
+import { STATIONS, Station } from "@/backend/src/repositories/dataStore";
+import { observationRepository } from "@/backend/src/repositories/observationRepository";
+import { getPollutionColor } from "@/lib/theme";
+
+export default function HistoryPage() {
+  const [stations, setStations] = useState<Station[]>(STATIONS);
+  const [selectedStationId, setSelectedStationId] = useState("kanpur_nehru");
+  const [selectedDays, setSelectedDays] = useState<number>(30);
+  const [selectedPollutant, setSelectedPollutant] = useState<"PM2.5" | "PM10" | "NO2" | "AQI">("PM2.5");
+  const [activeEventFilter, setActiveEventFilter] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("aeroward_custom_stations");
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setStations((prev) => [...parsed, ...prev.filter((p) => !parsed.some((x: any) => x.id === p.id))]);
+        }
+      }
+    } catch (e) {}
+
+    fetch("/api/v1/stations")
+      .then((r) => r.json())
+      .then((data) => {
+        if (data && data.stations && data.stations.length > 0) {
+          try {
+            const stored = localStorage.getItem("aeroward_custom_stations");
+            const parsed = stored ? JSON.parse(stored) : [];
+            const merged = [...parsed, ...data.stations.filter((p: any) => !parsed.some((x: any) => x.id === p.id))];
+            setStations(merged);
+          } catch {
+            setStations(data.stations);
+          }
+        }
+      })
+      .catch((err) => console.warn("Notice: Live station sync in history:", err));
+
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const urlId = params.get("stationId");
+      if (urlId) {
+        setSelectedStationId(urlId);
+      } else {
+        const lastSelected = localStorage.getItem("aeroward_selected_station_id");
+        if (lastSelected) setSelectedStationId(lastSelected);
+      }
+    }
+  }, []);
+
+  const handleStationChange = (id: string) => {
+    setSelectedStationId(id);
+    try {
+      localStorage.setItem("aeroward_selected_station_id", id);
+    } catch (e) {}
   };
-  satellite: {
-    tropomi_aai: number;
-    aod_550nm: number;
-    tropomi_no2_column_umol_m2: number;
+
+  const selectedStation = stations.find((s) => s.id === selectedStationId) ?? stations[0];
+
+  const historicalRecords = useMemo(() => {
+    return observationRepository.getHistorical(selectedStationId, selectedDays, selectedStation);
+  }, [selectedStationId, selectedDays, selectedStation]);
+
+  const chartData = useMemo(() => {
+    return historicalRecords.map((rec) => {
+      const d = new Date(rec.date);
+      const val = selectedPollutant === "AQI" ? rec.aqi : selectedPollutant === "PM2.5" ? rec.pm25 : selectedPollutant === "PM10" ? rec.pm10 : rec.no2;
+
+      return {
+        dateStr: `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${d.toLocaleTimeString([], { hour: "2-digit" })}`,
+        value: val,
+        pblh: rec.pblh_m,
+        wind: rec.wind_speed_ms,
+        event: rec.events && rec.events.length > 0 ? rec.events[0] : null,
+      };
+    });
+  }, [historicalRecords, selectedPollutant]);
+
+  const handleDownloadCsv = () => {
+    const headers = "Date,StationId,City,PM2.5,PM10,NO2,SO2,CO,O3,AQI,PBLH_m,WindSpeed_ms,DocumentedEvents\n";
+    const rows = historicalRecords.map((r) => `"${r.date}","${r.stationId}","${r.city}",${r.pm25},${r.pm10},${r.no2},${r.so2},${r.co},${r.o3},${r.aqi},${r.pblh_m},${r.wind_speed_ms},"${(r.events || []).join("; ")}"`).join("\n");
+
+    const blob = new Blob([headers + rows], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", `aeroward_historical_${selectedStationId}_${selectedDays}d.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
+
+  return (
+    <div className="mx-auto max-w-content px-4 py-8 sm:px-6 lg:px-8">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between border-b border-border-subtle pb-6">
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="font-sans text-xs uppercase tracking-wider text-data-neutral font-semibold">Longitudinal Observation Archive</span>
+            <span className="rounded bg-surface-elevated px-2 py-0.5 text-xs text-text-muted border border-border">Simulated demo dataset</span>
+          </div>
+          <h1 className="mt-1 font-display text-3xl font-bold text-text-primary">Historical Trends &amp; Episodic Event Timeline</h1>
+          <p className="mt-1 text-xs sm:text-sm text-text-secondary">This archive is labeled as simulated and is not an official CPCB validated record.</p>
+        </div>
+
+        <button onClick={handleDownloadCsv} className="inline-flex items-center gap-2 rounded-sm border border-border bg-surface-elevated px-4 py-2 font-sans text-xs font-semibold text-text-primary hover:border-accent hover:text-accent transition-colors">
+          <FileSpreadsheet className="h-4 w-4 text-data-improvement" /> Download CSV Telemetry
+        </button>
+      </div>
+
+      <div className="mt-6 flex flex-wrap items-center justify-between gap-4 border-b border-border-subtle pb-4">
+        <div className="flex items-center gap-2">
+          <MapPin className="h-4 w-4 text-accent" />
+          <select value={selectedStationId} onChange={(e) => handleStationChange(e.target.value)} className="rounded-sm border border-border bg-surface-elevated px-3 py-1.5 font-sans text-xs text-text-primary focus:border-accent focus:outline-none">
+            {stations.map((s) => (
+              <option key={s.id} value={s.id}>{s.name} ({s.city})</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="flex items-center gap-1.5 text-xs font-sans">
+          <span className="text-text-muted mr-1">Time Horizon:</span>
+          {[7, 14, 30, 90].map((d) => (
+            <button key={d} onClick={() => setSelectedDays(d)} className={`rounded-sm px-3 py-1 font-mono transition-colors ${selectedDays === d ? "border border-accent bg-surface-elevated text-accent font-bold" : "border border-border-subtle bg-surface hover:bg-surface-elevated text-text-secondary"}`} >{d} Days</button>
+          ))}
+        </div>
+
+        <div className="inline-flex rounded-sm border border-border bg-surface-elevated p-1">
+          {(["PM2.5", "PM10", "NO2", "AQI"] as const).map((pol) => (
+            <button key={pol} onClick={() => setSelectedPollutant(pol)} className={`rounded-sm px-3 py-1 font-mono text-xs font-semibold transition-colors ${selectedPollutant === pol ? "bg-accent text-accent-foreground shadow-sm" : "text-text-secondary hover:text-text-primary"}`} >{pol}</button>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-8">
+        <h2 className="font-display text-lg font-bold text-text-primary mb-3">Documented Meteorological Episodes in Time-Series</h2>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="border border-border-subtle bg-surface p-4 rounded-sm">
+            <div className="flex items-center gap-2 text-danger"><Flame className="h-4 w-4" /><span className="font-sans text-xs font-bold uppercase tracking-wider">Stubble Burning Plume</span></div>
+            <p className="mt-2 text-xs text-text-secondary font-sans leading-relaxed">Transboundary agricultural smoke advection. Spikes PM2.5 to 380+ µg/m³ with elevated CO and high UVAI absorbing aerosol indices.</p>
+          </div>
+          <div className="border border-border-subtle bg-surface p-4 rounded-sm">
+            <div className="flex items-center gap-2 text-data-improvement"><CloudRain className="h-4 w-4" /><span className="font-sans text-xs font-bold uppercase tracking-wider">Rain Washout Event</span></div>
+            <p className="mt-2 text-xs text-text-secondary font-sans leading-relaxed">Western disturbance precipitation triggers rapid wet deposition scavenging, dropping PM2.5 by 78% down to 36 µg/m³ within 6 hours.</p>
+          </div>
+          <div className="border border-border-subtle bg-surface p-4 rounded-sm">
+            <div className="flex items-center gap-2 text-data-weather"><ThermometerSnowflake className="h-4 w-4" /><span className="font-sans text-xs font-bold uppercase tracking-wider">Nocturnal Inversion Trap</span></div>
+            <p className="mt-2 text-xs text-text-secondary font-sans leading-relaxed">Winter radiational cooling compresses boundary layer to &lt;220m. Traps combustion exhaust overnight with slow daytime clearing.</p>
+          </div>
+          <div className="border border-border-subtle bg-surface p-4 rounded-sm">
+            <div className="flex items-center gap-2 text-warning"><Wind className="h-4 w-4" /><span className="font-sans text-xs font-bold uppercase tracking-wider">Crustal Dust Storm</span></div>
+            <p className="mt-2 text-xs text-text-secondary font-sans leading-relaxed">Pre-monsoon western squall lifts desert soil silt. Triggers extreme PM10 surge (600+ µg/m³) while combustion NO₂ drops due to dispersion.</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-8 border border-border bg-surface-elevated p-6 shadow-elevation">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-border-subtle pb-4">
+          <div>
+            <div className="text-xs text-text-muted font-sans uppercase tracking-wider">Chronological Sensor Telemetry ({selectedDays}-Day Record)</div>
+            <h2 className="mt-0.5 font-display text-xl font-bold text-text-primary">{selectedStation.name} &bull; {selectedPollutant} Time-Series</h2>
+          </div>
+        </div>
+
+        <div className="mt-6 h-[400px] w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={chartData} margin={{ top: 15, right: 35, left: 15, bottom: 5 }}>
+              <defs>
+                <linearGradient id="historyColor" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#c76b45" stopOpacity={0.4} />
+                  <stop offset="95%" stopColor="#c76b45" stopOpacity={0.0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#292d29" vertical={false} />
+              <XAxis dataKey="dateStr" stroke="#777c74" fontSize={11} tickLine={false} interval={selectedDays === 90 ? 36 : selectedDays === 30 ? 12 : selectedDays === 14 ? 6 : 2} tickFormatter={(val: string) => {
+                const parts = val.split(" ");
+                return `${parts[0]} ${parts[1] || ""}`;
+              }} />
+              <YAxis stroke="#777c74" fontSize={11} tickLine={false} unit=" µg/m³" />
+              <Tooltip content={({ active, payload }) => {
+                if (active && payload && payload.length) {
+                  const data = payload[0].payload;
+                  return (
+                    <div className="rounded-sm border border-border bg-surface-elevated p-3 shadow-lg text-xs font-sans">
+                      <div className="font-bold text-text-primary">{data.dateStr}</div>
+                      <div className="mt-1 font-mono text-accent font-bold">{selectedPollutant}: {data.value} µg/m³</div>
+                      <div className="text-text-muted font-mono text-[11px] mt-0.5">Modeled PBLH: {data.pblh}m &bull; Wind: {data.wind} m/s</div>
+                      {data.event && (<div className="mt-2 text-warning font-sans text-[11px] font-semibold border-t border-border-subtle pt-1.5">Episode: {data.event}</div>)}
+                    </div>
+                  );
+                }
+                return null;
+              }} />
+              <ReferenceLine y={60} stroke="#86a98a" strokeDasharray="4 4" label={{ value: "NAAQ Standard 60", fill: "#86a98a", fontSize: 10, position: "insideTopRight" }} />
+              <ReferenceLine y={250} stroke="#b95342" strokeDasharray="4 4" label={{ value: "Severe 250", fill: "#b95342", fontSize: 10, position: "insideTopRight" }} />
+              <Area type="monotone" dataKey="value" stroke="#c76b45" strokeWidth={2} fillOpacity={1} fill="url(#historyColor)" />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    </div>
+  );
 }
-
-export interface HistoricalRecord {
-  date: string;
-  stationId: string;
-  city: string;
-  pm25: number;
-  pm10: number;
-  no2: number;
-  so2: number;
-  co: number;
-  o3: number;
-  aqi: number;
-  pblh_m: number;
-  wind_speed_ms: number;
-  events?: string[];
-}
-
-export const STATIONS: Station[] = [
-  {
-    id: "kanpur_iitk",
-    name: "IIT Kanpur (Aerosol Research SuperSite)",
-    city: "Kanpur",
-    state: "Uttar Pradesh",
-    lat: 26.5123,
-    lng: 80.2329,
-    elevation_m: 126,
-    station_type: "Research_SuperSite",
-    operator: "IIT Kanpur / CPCB",
-    status: "active",
-    silt_loading_gm2: 1.4,
-    canyon_hw_ratio: 0.4,
-    canyon_btr: 0.35,
-  },
-  {
-    id: "kanpur_nehru",
-    name: "Nehru Nagar (Urban Commercial & Transit)",
-    city: "Kanpur",
-    state: "Uttar Pradesh",
-    lat: 26.4712,
-    lng: 80.3244,
-    elevation_m: 125,
-    station_type: "CAAQMS",
-    operator: "UPPCB / CPCB",
-    status: "active",
-    silt_loading_gm2: 6.8, // Heavy silt load above 2 g/m^2 trigger
-    canyon_hw_ratio: 1.42, // Deep street canyon
-    canyon_btr: 0.86,     // High build-to-line ratio
-  },
-  {
-    id: "kanpur_kidwai",
-    name: "Kidwai Nagar (High-Density Residential)",
-    city: "Kanpur",
-    state: "Uttar Pradesh",
-    lat: 26.4385,
-    lng: 80.3392,
-    elevation_m: 124,
-    station_type: "CAAQMS",
-    operator: "UPPCB / CPCB",
-    status: "active",
-    silt_loading_gm2: 4.2,
-    canyon_hw_ratio: 1.15,
-    canyon_btr: 0.78,
-  },
-  {
-    id: "kanpur_panki",
-    name: "Panki Industrial Area (Thermal & Heavy Manufacturing)",
-    city: "Kanpur",
-    state: "Uttar Pradesh",
-    lat: 26.4678,
-    lng: 80.2456,
-    elevation_m: 128,
-    station_type: "CAAQMS",
-    operator: "UPPCB / CPCB",
-    status: "active",
-    silt_loading_gm2: 8.5,
-    canyon_hw_ratio: 0.65,
-    canyon_btr: 0.45,
-  },
-  {
-    id: "kanpur_jajmau",
-    name: "Jajmau (Tannery & Leather Industrial Cluster)",
-    city: "Kanpur",
-    state: "Uttar Pradesh",
-    lat: 26.4312,
-    lng: 80.4011,
-    elevation_m: 122,
-    station_type: "CAAQMS",
-    operator: "UPPCB / CPCB",
-    status: "active",
-    silt_loading_gm2: 5.6,
-    canyon_hw_ratio: 0.95,
-    canyon_btr: 0.70,
-  },
-  {
-    id: "kanpur_kalyanpur",
-    name: "Kalyanpur (GT Road Arterial Corridor)",
-    city: "Kanpur",
-    state: "Uttar Pradesh",
-    lat: 26.4950,
-    lng: 80.2600,
-    elevation_m: 126,
-    station_type: "CAAQMS",
-    operator: "UPPCB / CPCB",
-    status: "active",
-    silt_loading_gm2: 7.2,
-    canyon_hw_ratio: 1.25,
-    canyon_btr: 0.82,
-  },
-  {
-    id: "delhi_anand_vihar",
-    name: "Anand Vihar (ISBT & Railway Terminal)",
-    city: "Delhi",
-    state: "Delhi",
-    lat: 28.6469,
-    lng: 77.3160,
-    elevation_m: 213,
-    station_type: "CAAQMS",
-    operator: "DPCC / CPCB",
-    status: "active",
-    silt_loading_gm2: 9.1,
-    canyon_hw_ratio: 1.35,
-    canyon_btr: 0.85,
-  },
-  {
-    id: "lucknow_talkatora",
-    name: "Talkatora Industrial District",
-    city: "Lucknow",
-    state: "Uttar Pradesh",
-    lat: 26.8322,
-    lng: 80.8925,
-    elevation_m: 123,
-    station_type: "CAAQMS",
-    operator: "UPPCB / CPCB",
-    status: "active",
-    silt_loading_gm2: 5.1,
-    canyon_hw_ratio: 1.05,
-    canyon_btr: 0.72,
-  },
-  {
-    id: "varanasi_bhu",
-    name: "Banaras Hindu University (Campus SuperSite)",
-    city: "Varanasi",
-    state: "Uttar Pradesh",
-    lat: 25.2677,
-    lng: 82.9913,
-    elevation_m: 81,
-    station_type: "Research_SuperSite",
-    operator: "BHU / UPPCB",
-    status: "active",
-    silt_loading_gm2: 1.8,
-    canyon_hw_ratio: 0.35,
-    canyon_btr: 0.3,
-  },
-  {
-    id: "patna_muradpur",
-    name: "Muradpur (Central Ganges Basin)",
-    city: "Patna",
-    state: "Bihar",
-    lat: 25.6186,
-    lng: 85.1588,
-    elevation_m: 53,
-    station_type: "CAAQMS",
-    operator: "BSPCB / CPCB",
-    status: "active",
-    silt_loading_gm2: 6.0,
-    canyon_hw_ratio: 1.18,
-    canyon_btr: 0.81,
-  },
-];
-
-export const DATA_SOURCES_REGISTRY = [
-  {
-    id: "cpcb-caaqms",
-    provider: "Central Pollution Control Board (CPCB) / State PCBs",
-    dataset: "Continuous Ambient Air Quality Monitoring Stations (CAAQMS)",
-    measurementType: "In-situ continuous physical telemetry (BAM-1020, TEOM, chemiluminescence)",
-    temporalResolution: "15-minute raw / 1-hour QA/QC validated",
-    spatialScope: "Station point coordinate (sub-kilometer representative footprint)",
-    lastIngestedAt: new Date().toISOString(),
-    status: "operational",
-    provenanceNote: "Ground-level verified observations. Filter tape attenuation calibrated against gravimetric reference samples.",
-  },
-  {
-    id: "copernicus-sentinel-5p",
-    provider: "European Space Agency (ESA) Copernicus Programme",
-    dataset: "Sentinel-5P TROPOMI Level-2 Offline Aerosol Index & Tropospheric NO2 Column",
-    measurementType: "Spaceborne Ultraviolet Absorbing Aerosol Index (AAI: 340/380 nm spectral contrast)",
-    temporalResolution: "Daily overpass (~13:30 local solar time)",
-    spatialScope: "3.5 km x 5.5 km pixel resolution",
-    lastIngestedAt: new Date(Date.now() - 3600000 * 4).toISOString(),
-    status: "operational",
-    provenanceNote: "Total atmospheric column density. High positive values indicate elevated UV-absorbing aerosols (smoke & dust). Not direct street-level PM2.5.",
-  },
-  {
-    id: "ecmwf-era5-nwp",
-    provider: "ECMWF / Copernicus Climate Change Service",
-    dataset: "ERA5 Reanalysis & Global Forecast System (GFS) NWP",
-    measurementType: "Numerical Boundary Layer Height (PBLH), synoptic wind advection vectors, thermal lapse rate",
-    temporalResolution: "Hourly forecast updates (00Z, 06Z, 12Z, 18Z cycles)",
-    spatialScope: "0.25° x 0.25° global grid (downscaled with local aerodynamic surface roughness)",
-    lastIngestedAt: new Date(Date.now() - 3600000 * 2).toISOString(),
-    status: "operational",
-    provenanceNote: "Synoptic thermodynamic boundary conditions used to compute aerosol-radiation-meteorological feedback.",
-  },
-  {
-    id: "iitk-source-apportionment",
-    provider: "Indian Institute of Technology Kanpur (IITK) & UPPCB",
-    dataset: "Comprehensive Air Quality Assessment, Receptor Modeling & Chemical Mass Balance (CMB/PMF)",
-    measurementType: "Optical carbon speciation (EC/OC), ionic chromatography (SIA), XRF trace metals",
-    temporalResolution: "Seasonal regimes (Summer vs Winter campaigns)",
-    spatialScope: "Kanpur airshed and central Indo-Gangetic Basin",
-    lastIngestedAt: new Date().toISOString(),
-    status: "reference-groundtruth",
-    provenanceNote: "Scientific research baseline published in UPPCB/IITK source apportionment reports and literature cited in the blueprint.",
-  },
-];
