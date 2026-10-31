@@ -21,6 +21,12 @@ interface AirQualityMapProps {
   showStreetCanyons: boolean;
 }
 
+const formatCoordinates = (lat: number, lng: number) => {
+  const latStr = `${Math.abs(lat).toFixed(4)}°${lat >= 0 ? "N" : "S"}`;
+  const lngStr = `${Math.abs(lng).toFixed(4)}°${lng >= 0 ? "E" : "W"}`;
+  return `${latStr}, ${lngStr}`;
+};
+
 export default function AirQualityMap({
   stations,
   observations,
@@ -42,6 +48,7 @@ export default function AirQualityMap({
   } | null>(null);
 
   const activeTarget = stations.find((s) => s.id === selectedStationId) || stations[0];
+  const activeObs = observations.find((o) => o.stationId === selectedStationId);
 
   useEffect(() => {
     if (!mapContainerRef.current) return;
@@ -87,7 +94,7 @@ export default function AirQualityMap({
     const map = new maplibregl.Map({
       container: mapContainerRef.current,
       style: darkStyle,
-      center: [80.315, 26.475], // Centered on Kanpur Metropolitan Urban Airshed
+      center: activeTarget ? [activeTarget.lng, activeTarget.lat] : [80.315, 26.475],
       zoom: 11.8,
       pitch: 32,
       bearing: -10,
@@ -100,92 +107,76 @@ export default function AirQualityMap({
     );
 
     map.on("load", () => {
-      // 1. Municipal Boundary Layer
-      map.addSource("kanpur-boundary-src", {
-        type: "geojson",
-        data: KANPUR_MUNICIPAL_BOUNDARY,
-      });
-
-      map.addLayer({
-        id: "kanpur-boundary-fill",
-        type: "fill",
-        source: "kanpur-boundary-src",
-        paint: {
-          "fill-color": "#181a18",
-          "fill-opacity": 0.25,
-        },
-      });
-
-      map.addLayer({
-        id: "kanpur-boundary-line",
-        type: "line",
-        source: "kanpur-boundary-src",
-        paint: {
-          "line-color": "#4b514a",
-          "line-width": 1.5,
-          "line-dasharray": [4, 3],
-        },
-      });
-
-      // 2. River Ganga Hydrological Ribbon
-      map.addSource("ganga-river-src", {
+      // 1. Add River Ganga contour polygon
+      map.addSource("ganga-river", {
         type: "geojson",
         data: GANGA_RIVER_GEOJSON,
       });
 
       map.addLayer({
-        id: "ganga-river-line",
-        type: "line",
-        source: "ganga-river-src",
-        layout: {
-          "line-cap": "round",
-          "line-join": "round",
-        },
+        id: "ganga-river-fill",
+        type: "fill",
+        source: "ganga-river",
         paint: {
-          "line-color": "#4a7a8c",
-          "line-width": 6,
-          "line-opacity": 0.75,
+          "fill-color": "#2c4856",
+          "fill-opacity": 0.45,
         },
       });
 
-      // 3. Ground Truth Major Corridors & Street Canyons
-      map.addSource("major-corridors-src", {
+      map.addLayer({
+        id: "ganga-river-outline",
+        type: "line",
+        source: "ganga-river",
+        paint: {
+          "line-color": "#4a7a8c",
+          "line-width": 1.5,
+          "line-opacity": 0.7,
+        },
+      });
+
+      // 2. Add Municipal Boundary
+      map.addSource("kanpur-boundary", {
+        type: "geojson",
+        data: KANPUR_MUNICIPAL_BOUNDARY,
+      });
+
+      map.addLayer({
+        id: "kanpur-boundary-line",
+        type: "line",
+        source: "kanpur-boundary",
+        paint: {
+          "line-color": "#636862",
+          "line-width": 1,
+          "line-dasharray": [3, 2],
+          "line-opacity": 0.5,
+        },
+      });
+
+      // 3. Add Major Arterial Corridors
+      map.addSource("major-corridors", {
         type: "geojson",
         data: MAJOR_CORRIDORS_GEOJSON,
       });
 
       map.addLayer({
-        id: "major-corridors-casing",
+        id: "major-corridors-lines",
         type: "line",
-        source: "major-corridors-src",
-        paint: {
-          "line-color": "#101110",
-          "line-width": 4.5,
-          "line-opacity": 0.8,
-        },
-      });
-
-      map.addLayer({
-        id: "major-corridors-line",
-        type: "line",
-        source: "major-corridors-src",
+        source: "major-corridors",
         paint: {
           "line-color": [
             "match",
-            ["get", "type"],
+            ["get", "corridorType"],
             "highway",
-            "#c76b45", // GT Road Rust
-            "secondary",
-            "#82b8c5", // Civil Lines Cyan
-            "railway",
-            "#a4a79f", // Railway Line
-            "#d58a50", // Southern Bypass
+            "#a8583b",
+            "arterial",
+            "#5e6e61",
+            "#444b44",
           ],
-          "line-width": 2.5,
+          "line-width": 2,
+          "line-opacity": 0.6,
         },
       });
 
-      mapLoadedRef.current = true;
       setMapLoaded(true);
     });
 
@@ -193,120 +184,108 @@ export default function AirQualityMap({
 
     return () => {
       map.remove();
+      mapRef.current = null;
     };
   }, []);
 
-  const mapLoadedRef = useRef(false);
-
-  // Toggle Street Canyon visibility
+  // Sync Markers when stations, observations, or pollutant changes
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !mapLoadedRef.current) return;
-    if (map.getLayer("major-corridors-line")) {
-      map.setLayoutProperty(
-        "major-corridors-line",
-        "visibility",
-        showStreetCanyons ? "visible" : "none"
-      );
-    }
-  }, [showStreetCanyons, mapLoaded]);
+    if (!map || !mapLoaded) return;
 
-  // Update markers and fly to selected station
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-
-    // Clean old markers
-    Object.values(markersRef.current).forEach((marker) => marker.remove());
-    markersRef.current = {};
+    // Clear removed markers
+    const currentStationIds = new Set(stations.map((s) => s.id));
+    Object.keys(markersRef.current).forEach((id) => {
+      if (!currentStationIds.has(id)) {
+        markersRef.current[id].remove();
+        delete markersRef.current[id];
+      }
+    });
 
     stations.forEach((station) => {
       const obs = observations.find((o) => o.stationId === station.id);
-      const isSelected = station.id === selectedStationId;
+      let value: number | null = null;
 
-      let displayVal: number | string = "--";
-      let unit = "µg/m³";
       if (obs) {
-        if (activePollutant === "AQI") {
-          displayVal = obs.aqi;
-          unit = "NAQI";
-        } else if (activePollutant === "AQI (US)") {
-          displayVal = obs.us_aqi || Math.round(51 + ((100 - 51) / (35.4 - 12.1)) * (Math.max(12.1, obs.pm25) - 12.1));
-          unit = "AQI-US";
+        if (activePollutant === "AQI (US)") {
+          value = obs.us_aqi ?? null;
+        } else if (activePollutant === "AQI") {
+          value = obs.aqi;
         } else if (activePollutant === "PM2.5") {
-          displayVal = obs.pm25;
+          value = obs.pm25;
         } else if (activePollutant === "PM10") {
-          displayVal = obs.pm10;
+          value = obs.pm10;
         } else if (activePollutant === "NO2") {
-          displayVal = obs.no2;
+          value = obs.no2;
         } else if (activePollutant === "SO2") {
-          displayVal = obs.so2;
+          value = obs.so2;
         } else if (activePollutant === "CO") {
-          displayVal = obs.co;
-          unit = "mg/m³";
+          value = obs.co;
         } else if (activePollutant === "O3") {
-          displayVal = obs.o3;
-        }
-      } else {
-        // Fallback realistic telemetry for custom / newly added stations
-        const fallbackAqi = Math.round(38 + (Math.abs(station.lat * 100) % 18));
-        if (activePollutant === "AQI") {
-          displayVal = fallbackAqi;
-          unit = "NAQI";
-        } else if (activePollutant === "AQI (US)") {
-          displayVal = Math.round(68 + (Math.abs(station.lat * 100) % 8));
-          unit = "AQI-US";
-        } else if (activePollutant === "PM2.5") {
-          displayVal = Math.round(fallbackAqi * 0.55);
-        } else if (activePollutant === "PM10") {
-          displayVal = Math.round(fallbackAqi * 1.1);
-        } else if (activePollutant === "NO2") {
-          displayVal = 26;
-        } else if (activePollutant === "SO2") {
-          displayVal = 10;
-        } else if (activePollutant === "CO") {
-          displayVal = 0.8;
-          unit = "mg/m³";
-        } else if (activePollutant === "O3") {
-          displayVal = 44;
+          value = obs.o3;
         }
       }
 
-      const numVal = typeof displayVal === "number" ? displayVal : 0;
-      const color = getPollutionColor(numVal, activePollutant);
+      const color = value !== null ? getPollutionColor(value, activePollutant) : "#a4a79f";
+      const isSelected = station.id === selectedStationId;
 
-      // Custom DOM marker element
-      const el = document.createElement("div");
-      el.className = `flex flex-col items-center cursor-pointer transition-transform ${
-        isSelected ? "scale-125 z-50" : "hover:scale-110 z-20"
-      }`;
-      const labelText = station.name.split(" ")[0] || station.city;
+      let marker = markersRef.current[station.id];
+
+      if (!marker) {
+        const el = document.createElement("div");
+        el.className = "station-marker cursor-pointer";
+        el.style.display = "flex";
+        el.style.flexDirection = "column";
+        el.style.alignItems = "center";
+        el.style.transition = "transform 0.15s ease-out";
+
+        el.onclick = () => {
+          onSelectStation(station.id);
+        };
+
+        marker = new maplibregl.Marker({ element: el })
+          .setLngLat([station.lng, station.lat])
+          .addTo(map);
+
+        markersRef.current[station.id] = marker;
+      }
+
+      // Update marker DOM
+      const el = marker.getElement();
       el.innerHTML = `
-        <div style="background-color: ${color}; box-shadow: 0 0 ${
-        isSelected ? "18px" : "8px"
-      } ${color}99;"
-             class="flex h-9 w-9 items-center justify-center rounded-full border-2 border-surface text-text-primary text-[11px] font-mono font-bold">
-          ${displayVal}
+        <div style="
+          background-color: ${color}20;
+          border: 2px solid ${color};
+          color: ${color};
+          width: ${isSelected ? "34px" : "28px"};
+          height: ${isSelected ? "34px" : "28px"};
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-family: monospace;
+          font-weight: 700;
+          font-size: ${isSelected ? "12px" : "11px"};
+          box-shadow: 0 0 ${isSelected ? "14px" : "6px"} ${color}60;
+          backdrop-filter: blur(4px);
+        ">
+          ${value !== null ? value : "--"}
         </div>
-        <div class="pointer-events-none mt-1 px-1.5 py-0.5 rounded bg-surface/95 border border-border text-[9px] font-sans text-text-primary whitespace-nowrap shadow-md ${
-          isSelected ? "font-bold text-accent border-accent" : "text-text-muted"
-        }">
-          ${labelText}
+        <div style="
+          background: rgba(18, 20, 18, 0.85);
+          color: #eeeee8;
+          font-size: 10px;
+          font-family: sans-serif;
+          padding: 1px 4px;
+          border-radius: 2px;
+          margin-top: 3px;
+          white-space: nowrap;
+          border: 1px solid #333a33;
+          display: ${isSelected ? "block" : "none"};
+        ">
+          ${station.name.split(" ")[0]}
         </div>
       `;
-
-      el.addEventListener("click", () => {
-        onSelectStation(station.id);
-        try {
-          localStorage.setItem("aeroward_selected_station_id", station.id);
-        } catch (e) {}
-      });
-
-      const marker = new maplibregl.Marker({ element: el })
-        .setLngLat([station.lng, station.lat])
-        .addTo(map);
-
-      markersRef.current[station.id] = marker;
     });
 
     // Fly to selected station if changed
@@ -323,18 +302,28 @@ export default function AirQualityMap({
     }
   }, [stations, observations, selectedStationId, activePollutant, onSelectStation, mapLoaded]);
 
+  // Derived meteorological display details from real observation
+  const tempStr = activeObs?.meteorology?.temp_c != null ? `${activeObs.meteorology.temp_c}°C` : null;
+  const rhStr = activeObs?.meteorology?.rh_pct != null ? `${activeObs.meteorology.rh_pct}% RH` : null;
+  const windStr =
+    activeObs?.meteorology?.wind_speed_ms != null
+      ? `${(activeObs.meteorology.wind_speed_ms * 3.6).toFixed(0)} km/h`
+      : null;
+  const metDetails = [tempStr, rhStr, windStr].filter(Boolean).join(" • ");
+
   return (
     <div className="relative h-full w-full overflow-hidden rounded-sm border border-border">
       <div ref={mapContainerRef} className="h-full w-full min-h-[500px]" />
 
-      {/* Wind Advection Vector Overlay Notice */}
+      {/* Atmospheric Conditions Notice */}
       {showWindVectors && (
         <div className="absolute top-4 left-4 z-10 flex items-center gap-2 rounded-sm border border-border bg-surface/90 px-3 py-1.5 text-xs text-text-primary backdrop-blur-md">
           <span className={`h-2 w-2 rounded-full ${activeTarget ? "bg-data-improvement animate-pulse" : "bg-data-weather animate-ping"}`} />
           <span className="font-sans font-medium text-text-secondary">
-            Precipitation &amp; Wind:{" "}
-            <span className="font-mono text-text-primary font-semibold">21°C Light Drizzle &bull; 95% RH &bull; 13 km/h</span>
-            <span className="ml-1 text-data-improvement font-semibold text-[11px]">Wet Washout Active</span>
+            Atmospheric Conditions:{" "}
+            <span className="font-mono text-text-primary font-semibold">
+              {metDetails || "Telemetry active"}
+            </span>
           </span>
         </div>
       )}
@@ -345,8 +334,10 @@ export default function AirQualityMap({
           <span className="h-2 w-2 rounded-full bg-accent" />
           <span className="font-sans font-medium text-text-secondary">
             Sentinel-5P TROPOMI UVAI:{" "}
-            <span className="font-mono text-accent font-semibold">+1.68</span>
-            <span className="ml-1 text-[11px] text-text-muted">Absorbing Smoke Aerosols</span>
+            <span className="font-mono text-accent font-semibold">
+              {activeObs?.satellite?.tropomi_aai != null ? `+${activeObs.satellite.tropomi_aai}` : "N/A"}
+            </span>
+            <span className="ml-1 text-[11px] text-text-muted">Aerosol Index</span>
           </span>
         </div>
       )}
@@ -370,7 +361,9 @@ export default function AirQualityMap({
             </div>
             <div className="flex items-center justify-between text-text-muted">
               <span>Geographic Coordinates</span>
-              <span className="font-mono text-text-primary">{activeTarget.lat.toFixed(4)}°N, {activeTarget.lng.toFixed(4)}°E</span>
+              <span className="font-mono text-text-primary">
+                {formatCoordinates(activeTarget.lat, activeTarget.lng)}
+              </span>
             </div>
             <div className="flex items-center justify-between text-text-muted">
               <span>Regional Airshed Domain</span>

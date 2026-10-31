@@ -14,11 +14,9 @@ export async function apiRoutes(server: FastifyInstance) {
   server.get("/places/details", airQualityController.getPlaceDetails.bind(airQualityController));
 
   // Air Quality Observations
-  server.get("/air-quality/current", airQualityController.getCurrent.bind(airQualityController));
   server.get("/air-quality/history", airQualityController.getHistory.bind(airQualityController));
   server.get("/air-quality/map", airQualityController.getMapData.bind(airQualityController));
   // Aliases for observations
-  server.get("/observations/latest", airQualityController.getCurrent.bind(airQualityController));
   server.get("/observations/history", airQualityController.getHistory.bind(airQualityController));
   server.get("/observations/map", airQualityController.getMapData.bind(airQualityController));
 

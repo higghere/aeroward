@@ -75,8 +75,8 @@ export class ObservationRepository {
     } else {
       // Indo-Gangetic Basin Airshed (Kanpur, Lucknow, Delhi, Patna):
       // Active wet precipitation deposition & moisture scavenging (rain washout drops PM2.5 to 18-24 µg/m³)
-      regionalBasePm25 = isNocturnalInversion ? 21 : 18;
-      regionalBasePm10Multiplier = 1.25;
+      regionalBasePm25 = (lat > 37.5 || lat < 8.0 || lng < 68.0 || lng > 97.5) ? (isNocturnalInversion ? 14 : 10) : (isNocturnalInversion ? 145 : 105);
+      regionalBasePm10Multiplier = (lat > 37.5 || lat < 8.0 || lng < 68.0 || lng > 97.5) ? 1.4 : 1.65;
     }
 
     const basePm25 = regionalBasePm25 * emissionFactor;
@@ -105,7 +105,7 @@ export class ObservationRepository {
       us_aqi: usa.usAqi,
       us_category: usa.usCategory,
       dominantPollutant: aqiResult.dominantPollutant,
-      dataQuality: "validated",
+      dataQuality: "simulated",
       meteorology: {
         temp_c: Number((23 - Math.sin(hour / 4) * 5).toFixed(1)),
         rh_pct: Math.round(isNocturnalInversion ? 76 : 48),

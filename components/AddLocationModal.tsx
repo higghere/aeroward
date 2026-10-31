@@ -141,6 +141,10 @@ export default function AddLocationModal({
       queryTarget ||
       `${finalCity} Air Quality Station`;
 
+    const isOutsideIndia = finalLat > 37.5 || finalLat < 8.0 || finalLng < 68.0 || finalLng > 97.5;
+    const resolvedType = isOutsideIndia ? "Research_SuperSite" : stationType;
+    const resolvedOperator = isOutsideIndia ? "Regional Air Quality Network" : (operator.trim() || "AeroWard Network Monitor");
+
     const newStation: Station = {
       id: `station_${finalCity.toLowerCase().replace(/[^a-z0-9]/g, "_")}_${Date.now().toString(36)}`,
       name: finalName,
@@ -149,8 +153,8 @@ export default function AddLocationModal({
       lat: Number(finalLat.toFixed(5)),
       lng: Number(finalLng.toFixed(5)),
       elevation_m: Number(elevation) || 125,
-      station_type: stationType,
-      operator: operator.trim() || "AeroWard Network Monitor",
+      station_type: resolvedType,
+      operator: resolvedOperator,
       status: "active",
       silt_loading_gm2: Number(siltLoading) || 4.5,
       canyon_hw_ratio: Number(canyonHwRatio) || 1.1,

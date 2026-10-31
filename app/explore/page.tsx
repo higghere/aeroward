@@ -5,86 +5,123 @@ import dynamic from "next/dynamic";
 import { 
   Layers, 
   MapPin, 
+  Sliders, 
+  Info, 
+  Clock, 
   Wind, 
-  Satellite, 
-  Activity, 
-  AlertTriangle, 
-  Clock,
-  Info,
-  PlusCircle,
-  Sparkles
+  Eye, 
+  ShieldAlert, 
+  Download,
+  PlusCircle
 } from "lucide-react";
 import { STATIONS, Station, Observation } from "@/backend/src/repositories/dataStore";
 import { observationRepository } from "@/backend/src/repositories/observationRepository";
 import { getPollutionColor } from "@/lib/theme";
 import AddLocationModal from "@/components/AddLocationModal";
 
-// Dynamically import MapLibre component with SSR disabled
 const AirQualityMap = dynamic(() => import("@/components/AirQualityMap"), {
   ssr: false,
   loading: () => (
-    <div className="flex h-full min-h-[550px] w-full items-center justify-center rounded-sm border border-border bg-surface font-sans text-xs text-text-muted">
-      <div className="flex items-center gap-2">
-        <Activity className="h-4 w-4 animate-spin text-accent" />
-        <span>Initializing MapLibre GL Environmental Spatial Layers...</span>
-      </div>
+    <div className="flex h-full w-full items-center justify-center bg-surface-elevated text-xs font-mono text-text-muted border border-border">
+      Initializing MapLibre GL Engine &bull; Vector Grids...
     </div>
   ),
 });
 
-const POLLUTANTS = [
-  "AQI (US)", "AQI", "PM2.5", "PM10", "NO2", "SO2", "CO", "O3"
-] as const;
-
-type PollutantType = typeof POLLUTANTS[number];
+const POLLUTANTS = ["PM2.5", "PM10", "NO2", "SO2", "CO", "O3", "AQI", "AQI (US)"] as const;
 
 export default function ExplorePage() {
   const [stations, setStations] = useState<Station[]>(STATIONS);
-  const [selectedStationId, setSelectedStationId] = useState<string>("kanpur_nehru");
-  const [activePollutant, setActivePollutant] = useState<PollutantType>("AQI (US)");
   const [observations, setObservations] = useState<Observation[]>([]);
+  const [selectedStationId, setSelectedStationId] = useState<string>("kanpur_nehru");
+  const [activePollutant, setActivePollutant] = useState<"PM2.5" | "PM10" | "NO2" | "SO2" | "CO" | "O3" | "AQI" | "AQI (US)">("PM2.5");
   const [showWind, setShowWind] = useState(true);
-  const [showSatellite, setShowSatellite] = useState(true);
-  const [showCanyons, setShowCanyons] = useState(true);
-  const [timeStepIndex, setTimeStepIndex] = useState(4); // 4 = "Now"
+  const [showSatellite, setShowSatellite] = useState(false);
+  const [showCanyons, setShowCanyons] = useState(false);
+  const [timeStepIndex, setTimeStepIndex] = useState(4); // "Current Telemetry"
   const [isAddLocationModalOpen, setIsAddLocationModalOpen] = useState(false);
 
   const TIME_STEPS = ["-24h", "-18h", "-12h", "-6h", "Current Telemetry", "+6h GNN", "+12h GNN", "+24h GNN"];
 
   useEffect(() => {
-    // 1. Initial physics state for immediate render
+    // 1. Initial local physics state for immediate render
     setObservations(observationRepository.getAllCurrent());
 
-    // 2. Fetch live registered stations from backend API
-    fetch("/api/v1/stations")
+    // 2. Map and Stations list use the identical live service endpoint: /api/v1/air-quality/map
+    fetch("/api/v1/air-quality/map")
       .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (data && data.stations && data.stations.length > 0) {
-          setStations(data.stations);
-        }
-      })
-      .catch(() => {});
+      .then((geoData) => {
+        if (geoData && Array.isArray(geoData.features) && geoData.features.length > 0) {
+          const liveStations: Station[] = [];
+          const liveObs: Observation[] = [];
 
-    // 3. Fetch live observations from backend API
-    fetch("/api/v1/air-quality/current")
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (data && data.observations && data.observations.length > 0) {
-          setObservations(data.observations);
+          for (const f of geoData.features) {
+            const p = f.properties || {};
+            const coords = f.geometry?.coordinates || [80.32, 26.475];
+
+            liveStations.push({
+              id: p.stationId,
+              name: p.name,
+              city: p.city,
+              state: p.state,
+              lat: coords[1],
+              lng: coords[0],
+              elevation_m: p.elevation_m,
+              station_type: p.station_type,
+              operator: p.operator,
+              status: p.status,
+              silt_loading_gm2: p.silt_loading_gm2,
+              canyon_hw_ratio: p.canyon_hw_ratio,
+              canyon_btr: p.canyon_btr,
+            });
+
+            if (p.pm25 !== null || p.aqi !== null) {
+              liveObs.push({
+                id: `obs_${p.stationId}`,
+                stationId: p.stationId,
+                recordedAt: p.recordedAt || new Date().toISOString(),
+                pm25: p.pm25 ?? 0,
+                pm10: p.pm10 ?? 0,
+                no2: p.no2 ?? 0,
+                so2: p.so2 ?? 0,
+                co: p.co ?? 0,
+                o3: p.o3 ?? 0,
+                aqi: p.aqi ?? 0,
+                category: p.category || "Moderate",
+                us_aqi: p.us_aqi ?? undefined,
+                dominantPollutant: p.dominantPollutant || "PM2.5",
+                dataQuality: p.dataQuality || "simulated",
+                meteorology: {
+                  temp_c: p.temp_c ?? null,
+                  rh_pct: p.rh_pct ?? null,
+                  wind_speed_ms: p.wind_speed_ms ?? null,
+                  wind_dir_deg: p.wind_dir_deg ?? null,
+                  pblh_m: p.pblh_m ?? null,
+                  inversion_strength_c100m: p.inversion_strength ?? null,
+                  solar_rad_wm2: null,
+                },
+                satellite: {
+                  tropomi_aai: p.tropomi_aai ?? null,
+                  aod_550nm: p.aod_550nm ?? null,
+                  tropomi_no2_column_umol_m2: null,
+                },
+              });
+            }
+          }
+
+          if (liveStations.length > 0) setStations(liveStations);
+          if (liveObs.length > 0) setObservations(liveObs);
         }
       })
       .catch(() => {});
   }, []);
 
   const handleAddStation = async (newStation: Station) => {
-    // 1. Prepend to local stations list
     setStations((prev) => [newStation, ...prev.filter((s) => s.id !== newStation.id)]);
 
-    // 2. Generate immediate physical observation with matching stationId so it NEVER shows "--"
     const immediateObs = observationRepository.getCurrentByStation(newStation.id, newStation);
     setObservations((prev) => [immediateObs, ...prev.filter((o) => o.stationId !== newStation.id)]);
 
-    // 3. Select it immediately to fly MapLibre and store active selection
     setSelectedStationId(newStation.id);
     try {
       const stored = localStorage.getItem("aeroward_custom_stations");
@@ -94,7 +131,6 @@ export default function ExplorePage() {
       localStorage.setItem("aeroward_selected_station_id", newStation.id);
     } catch (e) {}
 
-    // 4. Send to backend Fastify server to persist and get live calibrated API telemetry
     try {
       const res = await fetch("/api/v1/stations", {
         method: "POST",
@@ -108,13 +144,6 @@ export default function ExplorePage() {
           setStations((prev) => [actualStation, ...prev.filter((s) => s.id !== newStation.id && s.id !== actualStation.id)]);
           setSelectedStationId(actualStation.id);
           setObservations((prev) => [data.observation, ...prev.filter((o) => o.stationId !== newStation.id && o.stationId !== actualStation.id)]);
-          try {
-            const stored = localStorage.getItem("aeroward_custom_stations");
-            const list = stored ? JSON.parse(stored) : [];
-            const updated = [actualStation, ...list.filter((x: any) => x.id !== newStation.id && x.id !== actualStation.id)];
-            localStorage.setItem("aeroward_custom_stations", JSON.stringify(updated));
-            localStorage.setItem("aeroward_selected_station_id", actualStation.id);
-          } catch (e) {}
         }
       }
     } catch (err) {
@@ -125,31 +154,23 @@ export default function ExplorePage() {
   const selectedStation = stations.find((s) => s.id === selectedStationId) || stations[0];
   const selectedObs = observations.find((o) => o.stationId === selectedStationId);
 
-  const getMetricValue = (obs: Observation | undefined, pol: string) => {
+  const getMetricValue = (obs: Observation | undefined, pol: string): { val: number | string | null; unit: string } => {
     if (!obs) {
-      if (pol === "AQI (US)") return { val: 73, unit: "AQI-US" };
-      if (pol === "AQI") return { val: 38, unit: "NAQI Index" };
-      if (pol === "PM2.5") return { val: 21, unit: "µg/m³" };
-      if (pol === "PM10") return { val: 24, unit: "µg/m³" };
-      if (pol === "NO2") return { val: 24, unit: "µg/m³" };
-      if (pol === "SO2") return { val: 8, unit: "µg/m³" };
-      if (pol === "CO") return { val: 0.8, unit: "mg/m³" };
-      if (pol === "O3") return { val: 45, unit: "µg/m³" };
-      return { val: 21, unit: "µg/m³" };
+      return { val: null, unit: "" };
     }
-    if (pol === "AQI (US)") return { val: obs.us_aqi || Math.round(51 + ((100 - 51) / (35.4 - 12.1)) * (Math.max(12.1, obs.pm25) - 12.1)), unit: "AQI-US" };
-    if (pol === "AQI") return { val: obs.aqi, unit: "NAQI Index" };
-    if (pol === "PM2.5") return { val: obs.pm25, unit: "µg/m³" };
-    if (pol === "PM10") return { val: obs.pm10, unit: "µg/m³" };
-    if (pol === "NO2") return { val: obs.no2, unit: "µg/m³" };
-    if (pol === "SO2") return { val: obs.so2, unit: "µg/m³" };
-    if (pol === "CO") return { val: obs.co, unit: "mg/m³" };
-    if (pol === "O3") return { val: obs.o3, unit: "µg/m³" };
-    return { val: obs.pm25, unit: "µg/m³" };
+    if (pol === "AQI (US)") return { val: obs.us_aqi ?? null, unit: "AQI-US" };
+    if (pol === "AQI") return { val: obs.aqi ?? null, unit: "NAQI Index" };
+    if (pol === "PM2.5") return { val: obs.pm25 ?? null, unit: "µg/m³" };
+    if (pol === "PM10") return { val: obs.pm10 ?? null, unit: "µg/m³" };
+    if (pol === "NO2") return { val: obs.no2 ?? null, unit: "µg/m³" };
+    if (pol === "SO2") return { val: obs.so2 ?? null, unit: "µg/m³" };
+    if (pol === "CO") return { val: obs.co ?? null, unit: "mg/m³" };
+    if (pol === "O3") return { val: obs.o3 ?? null, unit: "µg/m³" };
+    return { val: obs.pm25 ?? null, unit: "µg/m³" };
   };
 
   const metric = getMetricValue(selectedObs, activePollutant);
-  const color = selectedObs ? getPollutionColor(Number(metric.val), activePollutant) : "#a4a79f";
+  const color = metric.val !== null ? getPollutionColor(Number(metric.val), activePollutant) : "#a4a79f";
 
   return (
     <div className="mx-auto max-w-content px-4 py-8 sm:px-6 lg:px-8">
@@ -161,7 +182,7 @@ export default function ExplorePage() {
               Geospatial Intelligence
             </span>
             <span className="rounded bg-surface-elevated px-2 py-0.5 text-xs text-text-muted border border-border">
-              MapLibre GL &bull; Esri Dark Canvas &bull; Google Maps API
+              MapLibre GL &bull; Esri Dark Canvas &bull; Unified Live Service
             </span>
           </div>
           <h1 className="mt-1 font-display text-3xl font-bold text-text-primary">
@@ -174,7 +195,6 @@ export default function ExplorePage() {
 
         {/* Action Controls: Add Location & Pollutant Tabs */}
         <div className="flex flex-wrap items-center gap-2">
-          {/* Add Location Google Maps API Button */}
           <button
             onClick={() => setIsAddLocationModalOpen(true)}
             className="inline-flex items-center gap-1.5 rounded-sm bg-accent px-3 py-1.5 font-sans text-xs font-semibold text-accent-foreground hover:bg-accent-hover transition-colors shadow-sm"
@@ -268,20 +288,21 @@ export default function ExplorePage() {
               {stations.map((st) => {
                 const obs = observations.find((o) => o.stationId === st.id);
                 const isSelected = st.id === selectedStationId;
-                let displayVal: number;
+                let displayVal: number | string | null = null;
                 let displayUnit = "AQI";
+
                 if (activePollutant === "AQI (US)") {
-                  displayVal = obs?.us_aqi || (obs ? Math.round(51 + ((100 - 51) / (35.4 - 12.1)) * (Math.max(12.1, obs.pm25) - 12.1)) : Math.round(68 + (Math.abs(st.lat * 100) % 8)));
+                  displayVal = obs?.us_aqi ?? null;
                   displayUnit = "AQI (US)";
                 } else if (activePollutant === "AQI") {
-                  displayVal = obs ? obs.aqi : Math.round(38 + (Math.abs(st.lat * 100) % 18));
+                  displayVal = obs?.aqi ?? null;
                   displayUnit = "NAQI";
                 } else {
                   const m = getMetricValue(obs, activePollutant);
                   displayVal = m.val;
                   displayUnit = m.unit;
                 }
-                const stColor = getPollutionColor(displayVal, activePollutant);
+                const stColor = displayVal !== null ? getPollutionColor(Number(displayVal), activePollutant) : "#a4a79f";
 
                 return (
                   <button
@@ -308,13 +329,19 @@ export default function ExplorePage() {
                     </div>
 
                     <div className="text-right shrink-0">
-                      <span
-                        style={{ color: stColor }}
-                        className="font-mono text-xs font-bold"
-                      >
-                        {displayVal}
-                      </span>
-                      <div className="text-[9px] font-sans text-text-muted">{displayUnit}</div>
+                      {displayVal !== null ? (
+                        <>
+                          <span
+                            style={{ color: stColor }}
+                            className="font-mono text-xs font-bold"
+                          >
+                            {displayVal}
+                          </span>
+                          <div className="text-[9px] font-sans text-text-muted">{displayUnit}</div>
+                        </>
+                      ) : (
+                        <span className="font-mono text-[11px] text-text-muted italic">no data</span>
+                      )}
                     </div>
                   </button>
                 );
@@ -376,31 +403,39 @@ export default function ExplorePage() {
                     Station Telemetry
                   </span>
                   <span className="rounded bg-data-improvement/20 px-2 py-0.5 text-[10px] font-sans font-bold text-data-improvement">
-                    {selectedStation.status.toUpperCase()}
+                    {(selectedStation?.status || "active").toUpperCase()}
                   </span>
                 </div>
                 <h2 className="mt-1 font-display text-2xl font-bold text-text-primary">
-                  {selectedStation.name}
+                  {selectedStation?.name || "Station"}
                 </h2>
                 <div className="mt-1 text-xs text-text-secondary font-sans">
-                  Coordinates: <span className="font-mono">{selectedStation.lat.toFixed(4)}°N, {selectedStation.lng.toFixed(4)}°E</span> &bull; Elevation: <span className="font-mono">{selectedStation.elevation_m}m</span> &bull; Operator: {selectedStation.operator}
+                  Coordinates: <span className="font-mono">{selectedStation?.lat?.toFixed(4)}°N, {selectedStation?.lng?.toFixed(4)}°E</span> &bull; Elevation: <span className="font-mono">{selectedStation?.elevation_m}m</span> &bull; Operator: {selectedStation?.operator}
                 </div>
               </div>
 
               {/* Big Metric Display */}
               <div className="text-right sm:border-l sm:border-border-subtle sm:pl-6">
                 <div className="text-xs uppercase text-text-muted font-sans">{activePollutant} Level</div>
-                <div style={{ color }} className="font-display text-4xl font-bold">
-                  {metric.val} <span className="text-xs font-mono text-text-muted">{metric.unit}</span>
-                </div>
+                {metric.val !== null ? (
+                  <div style={{ color }} className="font-display text-4xl font-bold">
+                    {metric.val} <span className="text-xs font-mono text-text-muted">{metric.unit}</span>
+                  </div>
+                ) : (
+                  <div className="font-display text-2xl font-bold text-text-muted italic">
+                    no data
+                  </div>
+                )}
                 <div className="mt-1 flex items-center justify-end gap-1.5 flex-wrap">
-                  <span className="inline-block rounded px-2 py-0.5 text-[11px] font-sans font-semibold" style={{ backgroundColor: `${color}25`, color }}>
-                    {activePollutant === "AQI (US)"
-                      ? `${selectedObs?.us_category || "Moderate"} (US EPA)`
-                      : `${selectedObs?.category || "Good"} (CPCB NAQI)`}
-                  </span>
+                  {selectedObs && (
+                    <span className="inline-block rounded px-2 py-0.5 text-[11px] font-sans font-semibold" style={{ backgroundColor: `${color}25`, color }}>
+                      {activePollutant === "AQI (US)"
+                        ? `${selectedObs.us_category || "Moderate"} (US EPA)`
+                        : `${selectedObs.category || "Good"} (CPCB NAQI)`}
+                    </span>
+                  )}
                   {selectedObs?.us_aqi && activePollutant !== "AQI (US)" && (
-                    <span className="inline-block rounded border border-border-subtle bg-surface px-2 py-0.5 text-[11px] font-mono text-text-secondary" title="US EPA Air Quality Index Standard (as shown on AQI.in / international apps)">
+                    <span className="inline-block rounded border border-border-subtle bg-surface px-2 py-0.5 text-[11px] font-mono text-text-secondary" title="US EPA Air Quality Index Standard">
                       {selectedObs.us_aqi} AQI (US)
                     </span>
                   )}
@@ -418,27 +453,43 @@ export default function ExplorePage() {
               <div className="border border-border-subtle bg-surface p-3 rounded-sm">
                 <div className="text-[11px] text-text-muted font-sans">Street Silt Loading</div>
                 <div className="mt-1 font-mono text-base font-bold text-text-primary">
-                  {selectedStation.silt_loading_gm2 || 4.5} <span className="text-xs text-text-muted">g/m²</span>
+                  {selectedStation?.silt_loading_gm2 != null ? (
+                    <>{selectedStation.silt_loading_gm2} <span className="text-xs text-text-muted">g/m²</span></>
+                  ) : (
+                    <span className="text-text-muted font-normal text-xs">no data</span>
+                  )}
                 </div>
                 <div className="mt-1 text-[11px] text-warning font-sans">
-                  {((selectedStation.silt_loading_gm2 || 4.5) > 2.0) ? "> 2.0 g/m² Sweeper Trigger Active" : "Normal Silt Level"}
+                  {selectedStation?.silt_loading_gm2 != null && selectedStation.silt_loading_gm2 > 2.0
+                    ? "> 2.0 g/m² Sweeper Trigger Active"
+                    : "Standard Silt Level"}
                 </div>
               </div>
 
               <div className="border border-border-subtle bg-surface p-3 rounded-sm">
                 <div className="text-[11px] text-text-muted font-sans">Canyon Ratio (H/W)</div>
                 <div className="mt-1 font-mono text-base font-bold text-text-primary">
-                  {selectedStation.canyon_hw_ratio || 1.1} <span className="text-xs text-text-muted">aspect</span>
+                  {selectedStation?.canyon_hw_ratio != null ? (
+                    <>{selectedStation.canyon_hw_ratio} <span className="text-xs text-text-muted">aspect</span></>
+                  ) : (
+                    <span className="text-text-muted font-normal text-xs">no data</span>
+                  )}
                 </div>
                 <div className="mt-1 text-[11px] text-text-muted font-sans">
-                  {((selectedStation.canyon_hw_ratio || 1.1) >= 1.0) ? "Deep Aerodynamic Vortex" : "Open Dispersion"}
+                  {selectedStation?.canyon_hw_ratio != null && selectedStation.canyon_hw_ratio >= 1.0
+                    ? "Deep Aerodynamic Vortex"
+                    : "Open Dispersion"}
                 </div>
               </div>
 
               <div className="border border-border-subtle bg-surface p-3 rounded-sm">
                 <div className="text-[11px] text-text-muted font-sans">Boundary Layer Height</div>
                 <div className="mt-1 font-mono text-base font-bold text-data-weather">
-                  {selectedObs?.meteorology.pblh_m || 320} <span className="text-xs text-text-muted">m</span>
+                  {selectedObs?.meteorology?.pblh_m != null ? (
+                    <>{selectedObs.meteorology.pblh_m} <span className="text-xs text-text-muted">m</span></>
+                  ) : (
+                    <span className="text-text-muted font-normal text-xs">no data</span>
+                  )}
                 </div>
                 <div className="mt-1 text-[11px] text-danger font-sans">
                   Surface Inversion Active
@@ -448,7 +499,11 @@ export default function ExplorePage() {
               <div className="border border-border-subtle bg-surface p-3 rounded-sm">
                 <div className="text-[11px] text-text-muted font-sans">Sentinel-5P UVAI</div>
                 <div className="mt-1 font-mono text-base font-bold text-accent">
-                  +{selectedObs?.satellite.tropomi_aai || 1.68} <span className="text-xs text-text-muted">index</span>
+                  {selectedObs?.satellite?.tropomi_aai != null ? (
+                    <>+{selectedObs.satellite.tropomi_aai} <span className="text-xs text-text-muted">index</span></>
+                  ) : (
+                    <span className="text-text-muted font-normal text-xs">no data</span>
+                  )}
                 </div>
                 <div className="mt-1 text-[11px] text-text-secondary font-sans">
                   Light-Absorbing Aerosols Aloft

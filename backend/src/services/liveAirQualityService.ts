@@ -5,8 +5,8 @@ import { config } from "../config/index.js";
 
 export class LiveAirQualityService {
   /**
-   * Fetches live air quality observations from OpenWeather Air Pollution API or Copernicus CAMS,
-   * calibrated against local street-canyon aerodynamics and boundary layer physics.
+   * Fetches live air quality observations from authentic telemetry APIs (WAQI, OpenWeather, Open-Meteo),
+   * falling back to calibrated atmospheric physics simulation.
    */
   async getLiveObservation(station: Station): Promise<Observation> {
     const lat = station.lat;
@@ -16,15 +16,15 @@ export class LiveAirQualityService {
     const isNocturnalInversion = hour < 9 || hour >= 21;
 
     // 1. Gold-Standard Tier: AQICN / WAQI Official CAAQMS & CPCB Ground Monitor Ingestion
-    const aqicnToken = config.AQICN_API_TOKEN || "ea9b52444d4cbb7716ee640b9ba30fef80cd9f2e";
+    const aqicnToken = config.AQICN_API_TOKEN;
     if (aqicnToken) {
       try {
         const cityClean = (station.city || station.name || "").split(",")[0].trim().toLowerCase();
-        let waqiUrl = `https://api.waqi.info/feed/${encodeURIComponent(cityClean)}/?token=${aqicnToken}`;
+        const waqiUrl = `https://api.waqi.info/feed/${encodeURIComponent(cityClean)}/?token=${aqicnToken}`;
 
         const aqicnController = new AbortController();
         const aqicnTimeout = setTimeout(() => aqicnController.abort(), 2800);
-        let aqicnRes = await fetch(waqiUrl, { signal: aqicnController.signal });
+        const aqicnRes = await fetch(waqiUrl, { signal: aqicnController.signal });
         clearTimeout(aqicnTimeout);
 
         let aqicnData = (await aqicnRes.json()) as any;
@@ -59,40 +59,29 @@ export class LiveAirQualityService {
           const recTimestamp = d.time?.v ? d.time.v * 1000 : (d.time?.iso ? new Date(d.time.iso).getTime() : 0);
           const ageHours = recTimestamp > 0 ? (now.getTime() - recTimestamp) / (1000 * 3600) : Infinity;
 
-          // Only accept fresh telemetry from active monitors (reject offline stations frozen months ago)
           if (ageHours <= 24) {
-            const rawUsAqi = typeof d.aqi === "number" ? d.aqi : 50;
-            const rawPm25Aqi = d.iaqi?.pm25?.v ?? rawUsAqi;
-            const rawPm10Aqi = d.iaqi?.pm10?.v ?? Math.round(rawPm25Aqi * 0.85);
+            // Note: WAQI's individual pollutant values (iaqi) are US EPA AQI sub-indices, not concentrations in µg/m³.
+            // Convert WAQI's sub-indices back into physical concentrations:
+            const rawPm25Aqi = typeof d.iaqi?.pm25?.v === "number" ? d.iaqi.pm25.v : (typeof d.aqi === "number" ? d.aqi : undefined);
+            const rawPm10Aqi = typeof d.iaqi?.pm10?.v === "number" ? d.iaqi.pm10.v : undefined;
 
-            // Convert WAQI's Individual AQI (US EPA scale) back into physical concentration in µg/m³
-            const pm25 = Math.round(convertUSAQIToPM25(rawPm25Aqi));
-            const pm10 = Math.round(convertUSAQIToPM10(rawPm10Aqi));
-            const no2 = Math.round(d.iaqi?.no2?.v || 28);
-            const so2 = Math.round(d.iaqi?.so2?.v || 12);
-            const co = Number((d.iaqi?.co?.v || 1.35).toFixed(2));
-            const o3 = Math.round(d.iaqi?.o3?.v || 45);
+            const pm25 = rawPm25Aqi !== undefined ? Math.round(convertUSAQIToPM25(rawPm25Aqi)) : 0;
+            const pm10 = rawPm10Aqi !== undefined ? Math.round(convertUSAQIToPM10(rawPm10Aqi)) : Math.round(pm25 * 1.6);
+            const no2 = typeof d.iaqi?.no2?.v === "number" ? Math.round(d.iaqi.no2.v) : 0;
+            const so2 = typeof d.iaqi?.so2?.v === "number" ? Math.round(d.iaqi.so2.v) : 0;
+            const co = typeof d.iaqi?.co?.v === "number" ? Number(d.iaqi.co.v.toFixed(2)) : 0;
+            const o3 = typeof d.iaqi?.o3?.v === "number" ? Math.round(d.iaqi.o3.v) : 0;
 
             // Calculate authentic Indian CPCB NAQI from physical concentrations
-            const aqiResult = calculateAQI({ pm25, pm10, no2, so2, co, o3 });
-
-            const domRaw = (d.dominentpol || "pm25").toLowerCase();
-            const dominantPollutant = domRaw.includes("pm25")
-              ? "PM2.5"
-              : domRaw.includes("pm10")
-              ? "PM10"
-              : domRaw.includes("no2")
-              ? "NO2"
-              : domRaw.includes("o3")
-              ? "O3"
-              : "PM2.5";
-
+            const aqiResult = calculateAQI({ pm25, pm10, no2: no2 || undefined, so2: so2 || undefined, co: co || undefined, o3: o3 || undefined });
             const usa = calculateUSAQI(pm25);
+
+            const recordedAt = d.time?.iso || (recTimestamp > 0 ? new Date(recTimestamp).toISOString() : now.toISOString());
 
             return {
               id: `obs_${station.id}_${now.getTime()}`,
               stationId: station.id,
-              recordedAt: now.toISOString(),
+              recordedAt,
               pm25,
               pm10,
               no2,
@@ -103,8 +92,8 @@ export class LiveAirQualityService {
               category: aqiResult.category,
               us_aqi: usa.usAqi,
               us_category: usa.usCategory,
-              dominantPollutant,
-              dataQuality: "validated",
+              dominantPollutant: aqiResult.dominantPollutant,
+              dataQuality: "raw",
               meteorology: {
                 temp_c: d.iaqi?.t?.v ?? Number((24 - (isNocturnalInversion ? 5 : 0)).toFixed(1)),
                 rh_pct: d.iaqi?.h?.v ? Math.round(d.iaqi.h.v) : (isNocturnalInversion ? 78 : 46),
@@ -127,12 +116,9 @@ export class LiveAirQualityService {
       }
     }
 
-    // 2. Secondary Ingestion Tier: OpenWeather Air Pollution API (aeroweather / default keys)
-    const primaryKey = config.OPENWEATHER_API_KEY || "cf67e2ec75f8211e03f192b54d43271d";
-    const fallbackKeys = ["cf67e2ec75f8211e03f192b54d43271d", "b8461e9105c7fe30a045c13f8da6c68b"];
-    const candidateKeys = Array.from(new Set([primaryKey, ...fallbackKeys])).filter(Boolean);
-
-    for (const openWeatherKey of candidateKeys) {
+    // 2. Secondary Ingestion Tier: OpenWeather Air Pollution API
+    const openWeatherKey = config.OPENWEATHER_API_KEY;
+    if (openWeatherKey) {
       try {
         const owController = new AbortController();
         const owTimeout = setTimeout(() => owController.abort(), 2800);
@@ -143,33 +129,24 @@ export class LiveAirQualityService {
         if (owRes.ok) {
           const owData = (await owRes.json()) as any;
           const cur = owData.list?.[0]?.components;
+          const dt = owData.list?.[0]?.dt;
           if (cur && cur.pm2_5 !== undefined) {
-            const scity = (station.city || "").toLowerCase();
-            const sname = (station.name || "").toLowerCase();
-            const isDoonValley =
-              scity.includes("dehradun") ||
-              sname.includes("dehradun") ||
-              scity.includes("rishikesh") ||
-              (lat >= 29.8 && lat <= 30.6 && lng >= 77.8 && lng <= 78.6);
-
-            // Regional Topography Calibration:
-            // High Himalayan / foothill valleys experience nocturnal katabatic drainage (clean air from mountain heights),
-            // whereas coarse OpenWeather cells blend in the industrial Gangetic plain.
-            const elevationFactor = isDoonValley ? 0.22 : 1.0;
-            const pm25 = Math.round((Number(cur.pm2_5) || 25) * elevationFactor);
-            const pm10 = Math.round((Number(cur.pm10) || pm25 * 1.8) * (isDoonValley ? 0.32 : 1.0));
-            const no2 = Math.round(Number(cur.no2) || 28);
-            const so2 = Math.round(Number(cur.so2) || 12);
-            const co = Number(((Number(cur.co) || 350) / 1000).toFixed(2)); // ug/m3 -> mg/m3
-            const o3 = Math.round(Number(cur.o3) || 45);
+            const pm25 = Math.round(Number(cur.pm2_5));
+            const pm10 = Math.round(Number(cur.pm10) || pm25 * 1.6);
+            const no2 = Math.round(Number(cur.no2) || 0);
+            const so2 = Math.round(Number(cur.so2) || 0);
+            const co = Number(((Number(cur.co) || 0) / 1000).toFixed(2)); // ug/m3 -> mg/m3
+            const o3 = Math.round(Number(cur.o3) || 0);
 
             const aqiResult = calculateAQI({ pm25, pm10, no2, so2, co, o3 });
             const usa = calculateUSAQI(pm25);
 
+            const recordedAt = dt ? new Date(dt * 1000).toISOString() : now.toISOString();
+
             return {
               id: `obs_${station.id}_${now.getTime()}`,
               stationId: station.id,
-              recordedAt: now.toISOString(),
+              recordedAt,
               pm25,
               pm10,
               no2,
@@ -181,7 +158,7 @@ export class LiveAirQualityService {
               us_aqi: usa.usAqi,
               us_category: usa.usCategory,
               dominantPollutant: aqiResult.dominantPollutant,
-              dataQuality: "validated",
+              dataQuality: "estimated",
               meteorology: {
                 temp_c: Number((24 - (isNocturnalInversion ? 5 : 0)).toFixed(1)),
                 rh_pct: isNocturnalInversion ? 78 : 46,
@@ -200,12 +177,12 @@ export class LiveAirQualityService {
           }
         }
       } catch (owErr) {
-        // Continue to try next key or fall through to Open-Meteo
+        // Fall through to Open-Meteo
       }
     }
 
+    // 3. Tertiary Ingestion Tier: Open-Meteo Copernicus CAMS API (Keyless)
     try {
-      // 3. Tertiary Ingestion Tier: Open-Meteo global Copernicus CAMS API
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 2500);
 
@@ -218,40 +195,22 @@ export class LiveAirQualityService {
         const cur = data.current;
 
         if (cur && cur.pm2_5 !== undefined) {
-          // Micro-environmental street canyon and silt factor calibration
-          let microFactor = 1.0;
-          if (station.silt_loading_gm2 && station.silt_loading_gm2 > 4.0) {
-            microFactor += (station.silt_loading_gm2 - 2.0) * 0.08;
-          }
-          if (station.canyon_hw_ratio && station.canyon_hw_ratio > 1.0) {
-            microFactor += (station.canyon_hw_ratio - 1.0) * 0.15;
-          }
-
-          // Regional atmospheric calibrations:
-          const scity = (station.city || "").toLowerCase();
-          const sname = (station.name || "").toLowerCase();
-          const isDoonValley = scity.includes("dehradun") || sname.includes("dehradun") || scity.includes("rishikesh") || (lat >= 29.8 && lat <= 30.6 && lng >= 77.8 && lng <= 78.6);
-          const isIGP = !isDoonValley && lat >= 24.5 && lat <= 29.5 && lng >= 75.0 && lng <= 86.5;
-          const inversionFactor = (isIGP && isNocturnalInversion) ? 1.4 : 1.0;
-
-          const totalModifier = Math.min(3.0, Math.max(0.7, microFactor * inversionFactor));
-
-          const rawPm25 = Number(cur.pm2_5) || 25;
-          const pm25 = isDoonValley ? Math.min(25, Math.round(rawPm25)) : Math.round(Math.max(12, rawPm25 * totalModifier));
-          const rawPm10 = Number(cur.pm10) || pm25 * 1.6;
-          const pm10 = isDoonValley ? Math.min(45, Math.round(rawPm10)) : Math.round(Math.max(pm25 * 1.2, rawPm10 * totalModifier));
-          const no2 = Math.round((Number(cur.nitrogen_dioxide) || 28) * (isNocturnalInversion ? 1.3 : 1.0));
-          const so2 = Math.round(Number(cur.sulphur_dioxide) || 14);
-          const co = Number(((Number(cur.carbon_monoxide) || 380) / 500).toFixed(2));
-          const o3 = Math.round(Number(cur.ozone) || (isNocturnalInversion ? 22 : 55));
+          const pm25 = Math.round(Number(cur.pm2_5));
+          const pm10 = Math.round(Number(cur.pm10) || pm25 * 1.6);
+          const no2 = Math.round(Number(cur.nitrogen_dioxide) || 0);
+          const so2 = Math.round(Number(cur.sulphur_dioxide) || 0);
+          // Convert µg/m³ to mg/m³: divide by 1000
+          const co = Number(((Number(cur.carbon_monoxide) || 0) / 1000).toFixed(2));
+          const o3 = Math.round(Number(cur.ozone) || 0);
 
           const aqiResult = calculateAQI({ pm25, pm10, no2, so2, co, o3 });
           const usa = calculateUSAQI(pm25);
+          const recordedAt = cur.time ? new Date(cur.time).toISOString() : now.toISOString();
 
           return {
             id: `obs_${station.id}_${now.getTime()}`,
             stationId: station.id,
-            recordedAt: now.toISOString(),
+            recordedAt,
             pm25,
             pm10,
             no2,
@@ -263,7 +222,7 @@ export class LiveAirQualityService {
             us_aqi: cur.us_aqi ? Math.round(Number(cur.us_aqi)) : usa.usAqi,
             us_category: usa.usCategory,
             dominantPollutant: aqiResult.dominantPollutant,
-            dataQuality: "validated",
+            dataQuality: "estimated",
             meteorology: {
               temp_c: Number((24 - (isNocturnalInversion ? 5 : 0)).toFixed(1)),
               rh_pct: isNocturnalInversion ? 78 : 46,
@@ -285,7 +244,7 @@ export class LiveAirQualityService {
       // Graceful fallback to physics synthesis
     }
 
-    // Physics fallback
+    // Authentic physics-based baseline simulation
     return observationRepository.getCurrentByStation(station.id, station);
   }
 }

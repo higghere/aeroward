@@ -138,15 +138,18 @@ export default function HistoryPage() {
             <span className="font-sans text-xs uppercase tracking-wider text-data-neutral font-semibold">
               Longitudinal Observation Archive
             </span>
+            <span className="rounded bg-warning/20 text-warning px-2 py-0.5 text-xs font-semibold border border-warning/30">
+              Simulated Historical Dataset
+            </span>
             <span className="rounded bg-surface-elevated px-2 py-0.5 text-xs text-text-muted border border-border">
-              CAAQMS Multi-Year Telemetry
+              Demonstration Mode
             </span>
           </div>
           <h1 className="mt-1 font-display text-3xl font-bold text-text-primary">
             Historical Trends &amp; Episodic Event Timeline
           </h1>
           <p className="mt-1 text-xs sm:text-sm text-text-secondary">
-            Authentic meteorological disruption signatures: agricultural burning plumes, winter nocturnal inversions, western disturbance washouts, and crustal dust storms.
+            Simulated atmospheric physics demonstration: agricultural burning plumes, winter nocturnal inversions, western disturbance washouts, and crustal dust storms.
           </p>
         </div>
 
@@ -215,7 +218,7 @@ export default function HistoryPage() {
       {/* 4 Documented Meteorological Episodes Banner Grid */}
       <div className="mt-8">
         <h2 className="font-display text-lg font-bold text-text-primary mb-3">
-          Documented Meteorological Episodes in Time-Series
+          Simulated Atmospheric Episodes in Time-Series
         </h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="border border-border-subtle bg-surface p-4 rounded-sm">
@@ -273,17 +276,17 @@ export default function HistoryPage() {
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-border-subtle pb-4">
           <div>
             <div className="text-xs text-text-muted font-sans uppercase tracking-wider">
-              Chronological Sensor Telemetry ({selectedDays}-Day Record)
+              Chronological Model Telemetry ({selectedDays}-Day Record)
             </div>
             <h2 className="mt-0.5 font-display text-xl font-bold text-text-primary">
-              {selectedStation.name} &bull; {selectedPollutant} Time-Series
+              {selectedStation.name} &bull; {selectedPollutant} Time-Series (Simulated)
             </h2>
           </div>
 
           <div className="flex items-center gap-4 text-xs font-sans">
             <div className="flex items-center gap-1.5">
               <span className="h-2 w-3 rounded-sm bg-accent inline-block" />
-              <span className="text-text-secondary">Ground Telemetry</span>
+              <span className="text-text-secondary">Simulated Telemetry</span>
             </div>
             <div className="flex items-center gap-1.5">
               <span className="h-0.5 w-4 border-b border-dashed border-danger inline-block" />

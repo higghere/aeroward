@@ -49,9 +49,6 @@ export class AirQualityController {
     let resolvedCity = body.city || "Custom Location";
     let resolvedState = body.state || "Uttar Pradesh";
 
-    // Geospatial Integrity Guard:
-    // If the station name or city mentions a known outside region (e.g. Agra, Mumbai, Shillong, Delhi),
-    // but the incoming lat/lng matches Kanpur defaults (~26.47, 80.32), automatically resolve true coordinates.
     const isKanpurDefaultCoords = Math.abs(resolvedLat - 26.475) < 0.05 && Math.abs(resolvedLng - 80.32) < 0.05;
     const isNamedNonKanpur =
       !body.name.toLowerCase().includes("kanpur") &&
@@ -191,9 +188,8 @@ export class AirQualityController {
 
     const apiKey = config.GOOGLE_MAPS_API_KEY;
 
-    // 1. If Google API is available and not exhausted, try Google Places API (New)
     try {
-      if (placeId && !placeId.startsWith("custom_") && !placeId.startsWith("geo_")) {
+      if (apiKey && placeId && !placeId.startsWith("custom_") && !placeId.startsWith("geo_")) {
         const googleRes = await fetch(
           `https://places.googleapis.com/v1/places/${encodeURIComponent(placeId)}?fields=id,displayName,formattedAddress,location,addressComponents`,
           {
@@ -230,7 +226,6 @@ export class AirQualityController {
       // Continue to geocodingService
     }
 
-    // 2. High-precision Geocoding Service (National index + Photon API + Nominatim)
     const targetString = fallbackQuery || (placeId ? placeId.replace(/^geo_/i, "").replace(/[_-]/g, " ").trim() : "India");
     const geo = await geocodingService.resolveLocation(targetString);
 
@@ -245,43 +240,62 @@ export class AirQualityController {
     });
   }
 
-  private liveCache: { timestamp: number; data: Observation[] } | null = null;
-
-  async getCurrent(req: FastifyRequest, reply: FastifyReply) {
-    const query = LocationQuerySchema.safeParse(req.query);
-    const stationId = query.success ? query.data.stationId : (req.query as any)?.stationId;
-
-    if (stationId) {
-      const station = await stationRepository.getById(stationId);
-      if (station) {
-        const obs = await liveAirQualityService.getLiveObservation(station);
-        return reply.send(obs);
-      }
-      const obs = observationRepository.getCurrentByStation(stationId);
-      return reply.send(obs);
-    }
-
-    const now = Date.now();
-    if (this.liveCache && now - this.liveCache.timestamp < 30000) {
-      return reply.send({ count: this.liveCache.data.length, observations: this.liveCache.data });
-    }
-
-    try {
-      const stations = await stationRepository.getAll();
-      const liveObs = await Promise.all(
-        stations.map((s) => liveAirQualityService.getLiveObservation(s))
-      );
-      this.liveCache = { timestamp: now, data: liveObs };
-      return reply.send({ count: liveObs.length, observations: liveObs });
-    } catch {
-      const all = observationRepository.getAllCurrent();
-      return reply.send({ count: all.length, observations: all });
-    }
-  }
-
+  // MapLibre GeoJSON uses the identical live service as stations list
   async getMapData(req: FastifyRequest, reply: FastifyReply) {
-    const geojson = observationRepository.getGeoJSON();
-    return reply.send(geojson);
+    const stations = await stationRepository.getAll();
+    const liveObs = await Promise.all(
+      stations.map((s) => liveAirQualityService.getLiveObservation(s))
+    );
+    const obsMap = new Map(liveObs.map((o) => [o.stationId, o]));
+
+    const features = stations.map((station) => {
+      const obs = obsMap.get(station.id);
+      return {
+        type: "Feature" as const,
+        geometry: {
+          type: "Point" as const,
+          coordinates: [station.lng, station.lat],
+        },
+        properties: {
+          stationId: station.id,
+          name: station.name,
+          city: station.city,
+          state: station.state,
+          elevation_m: station.elevation_m,
+          station_type: station.station_type,
+          operator: station.operator,
+          status: station.status,
+          silt_loading_gm2: station.silt_loading_gm2,
+          canyon_hw_ratio: station.canyon_hw_ratio,
+          canyon_btr: station.canyon_btr,
+          pm25: obs ? obs.pm25 : null,
+          pm10: obs ? obs.pm10 : null,
+          no2: obs ? obs.no2 : null,
+          so2: obs ? obs.so2 : null,
+          co: obs ? obs.co : null,
+          o3: obs ? obs.o3 : null,
+          aqi: obs ? obs.aqi : null,
+          us_aqi: obs?.us_aqi ?? null,
+          category: obs ? obs.category : null,
+          dominantPollutant: obs ? obs.dominantPollutant : null,
+          dataQuality: obs ? obs.dataQuality : "simulated",
+          temp_c: obs?.meteorology?.temp_c ?? null,
+          rh_pct: obs?.meteorology?.rh_pct ?? null,
+          wind_speed_ms: obs?.meteorology?.wind_speed_ms ?? null,
+          wind_dir_deg: obs?.meteorology?.wind_dir_deg ?? null,
+          pblh_m: obs?.meteorology?.pblh_m ?? null,
+          inversion_strength: obs?.meteorology?.inversion_strength_c100m ?? null,
+          tropomi_aai: obs?.satellite?.tropomi_aai ?? null,
+          aod_550nm: obs?.satellite?.aod_550nm ?? null,
+          recordedAt: obs?.recordedAt ?? null,
+        },
+      };
+    });
+
+    return reply.send({
+      type: "FeatureCollection",
+      features,
+    });
   }
 
   async getHistory(req: FastifyRequest, reply: FastifyReply) {
@@ -294,6 +308,8 @@ export class AirQualityController {
       stationId,
       daysRequested: days,
       count: history.length,
+      mode: "simulated",
+      provenance: "Demonstration / Physics-based synthetic historical dataset",
       records: history,
     });
   }
@@ -376,16 +392,14 @@ export class AirQualityController {
 
   async postScenario(req: FastifyRequest, reply: FastifyReply) {
     const body = ScenarioSimulationSchema.safeParse(req.body);
-    const params = body.success
-      ? body.data
-      : {
-          city: "Kanpur",
-          commercialVehicleDiversionPct: 35,
-          siltSweepingWetSuppressionPct: 50,
-          industrialFurnaceKilnModulationPct: 30,
-          biomassBurningBanEnforcementPct: 40,
-          streetVegetativeBufferPct: 25,
-        };
+    const params = body.success ? body.data : {
+      city: "Kanpur",
+      commercialVehicleDiversionPct: 35,
+      siltSweepingWetSuppressionPct: 50,
+      industrialFurnaceKilnModulationPct: 30,
+      biomassBurningBanEnforcementPct: 40,
+      streetVegetativeBufferPct: 25,
+    };
 
     const result = scenarioEngine.simulate(params);
     return reply.send(result);
@@ -414,33 +428,8 @@ export class AirQualityController {
 
   async getModelPerformance(req: FastifyRequest, reply: FastifyReply) {
     return reply.send({
-      modelEvaluations: [
-        {
-          model: "Spatiotemporal Graph Neural Network (A3T-GCN)",
-          domain: "Short-Term Forecast (12h - 72h)",
-          chronologicalValidationSplit: "Train: 2023-01 to 2024-06 | Test: 2024-07 to 2025-06",
-          metricsByHorizon: [
-            { horizon: "12h", mae: 11.2, rmse: 16.5, bias: -0.6, skillVsPersistence: 0.52, picp95: 94.2 },
-            { horizon: "24h", mae: 14.8, rmse: 21.3, bias: -1.2, skillVsPersistence: 0.42, picp95: 93.8 },
-            { horizon: "48h", mae: 19.4, rmse: 28.1, bias: -2.1, skillVsPersistence: 0.33, picp95: 91.5 },
-            { horizon: "72h", mae: 24.6, rmse: 35.7, bias: -3.4, skillVsPersistence: 0.25, picp95: 89.2 },
-          ],
-        },
-        {
-          model: "Seasonal Climatological Ensemble & Teleconnection Autoregressive",
-          domain: "Long-Range Outlook (1m - 7m)",
-          status: "Experimental / Independent Development (Not proven in research paper)",
-          metricsByHorizon: [
-            { horizon: "1m", mae: 18.5, rmse: 24.2, bias: +2.1, skillVsClimatology: 0.38 },
-            { horizon: "2m", mae: 23.1, rmse: 30.6, bias: +3.4, skillVsClimatology: 0.31 },
-            { horizon: "3m", mae: 28.4, rmse: 37.8, bias: +4.2, skillVsClimatology: 0.24 },
-            { horizon: "4m", mae: 34.0, rmse: 44.5, bias: +5.1, skillVsClimatology: 0.18 },
-            { horizon: "5m", mae: 39.2, rmse: 51.1, bias: +6.3, skillVsClimatology: 0.13 },
-            { horizon: "6m", mae: 43.8, rmse: 57.4, bias: +7.0, skillVsClimatology: 0.08 },
-            { horizon: "7m", mae: 47.5, rmse: 62.9, bias: +8.2, skillVsClimatology: 0.04 },
-          ],
-        },
-      ],
+      note: "No validation set available yet. Metrics intentionally omitted until a real benchmark is published.",
+      modelEvaluations: [],
     });
   }
 }

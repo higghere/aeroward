@@ -106,25 +106,26 @@ export default function ForecastPage() {
     return generateLongRangeForecast(selectedStationId, selectedPollutant, longMonthsCount, selectedStation);
   }, [selectedStationId, selectedPollutant, longMonthsCount, selectedStation]);
 
-  // Chart data formatting with trailing historical context to prevent 1M flattening
+  // Unified chart points based on active forecast tab
   const chartData = useMemo(() => {
     if (forecastType === "short") {
       return shortResult.points.map((pt) => ({
         label: `+${pt.stepHour}h`,
         time: new Date(pt.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         predicted: pt.predictedValue,
+        observed: undefined,
         lower95: pt.lower95,
         upper95: pt.upper95,
+        climatology: undefined,
         pblh: pt.pblh_m,
-        aqi: pt.predictedAqi,
         category: pt.aqiCategory,
         isHistorical: false,
       }));
     } else {
-      // 1. Trailing historical context points (T-3 to T-0)
-      const historicalPoints = longResult.historicalTrailingMonths.map((h) => ({
+      // 1. Observed historical baseline context (T-3 to T-1)
+      const historicalPoints = (longResult.historicalTrailingMonths || []).map((h) => ({
         label: `${h.monthName.slice(0, 3)} '${String(h.year).slice(2)}`,
-        fullMonth: `${h.monthName} ${h.year} (Observed History)`,
+        fullMonth: `${h.monthName} ${h.year} (Observed Baseline)`,
         predicted: h.observedMean,
         observed: h.observedMean,
         climatology: h.climatologicalMean,
@@ -134,11 +135,9 @@ export default function ForecastPage() {
         upper95: undefined,
         driver: "Historical Baseline Observations",
         risk: "Historical Telemetry",
+        pblh: 320,
         isHistorical: true,
       }));
-
-      // Connect the last historical point to the forecast trajectory
-      const lastHist = historicalPoints[historicalPoints.length - 1];
 
       // 2. Future forecast points (T+1 to T+numMonths)
       const futurePoints = longResult.forecastMonths.map((m) => ({
@@ -170,6 +169,9 @@ export default function ForecastPage() {
             <span className="font-sans text-xs uppercase tracking-wider text-accent font-semibold">
               Predictive Atmospheric Modeling
             </span>
+            <span className="rounded bg-warning/20 text-warning px-2 py-0.5 text-xs font-semibold border border-warning/30">
+              Simulated Forecast Engine
+            </span>
             <span className="rounded bg-surface-elevated px-2 py-0.5 text-xs text-text-muted border border-border">
               {forecastType === "short" ? "A3T-GCN Spatiotemporal" : "Seasonal Climatology Ensemble"}
             </span>
@@ -178,10 +180,39 @@ export default function ForecastPage() {
             Multi-Horizon Air Quality Forecast Engine
           </h1>
           <p className="mt-1 text-xs sm:text-sm text-text-secondary">
-            Continuous multi-step projections across 12–72 hours and a separately evaluated 1–7-month seasonal outlook.
+            Simulated advection graph neural network and seasonal climatology models for demonstration.
           </p>
         </div>
 
+        {/* Tab Switcher: Short-Term vs Long-Range */}
+        <div className="inline-flex rounded-sm border border-border bg-surface-elevated p-1">
+          <button
+            onClick={() => setForecastType("short")}
+            className={`flex items-center gap-2 rounded-sm px-4 py-2 font-sans text-xs font-semibold transition-colors ${
+              forecastType === "short"
+                ? "bg-accent text-accent-foreground shadow-sm"
+                : "text-text-secondary hover:text-text-primary"
+            }`}
+          >
+            <Clock className="h-4 w-4" />
+            <span>Short-Term (12h – 72h)</span>
+          </button>
+          <button
+            onClick={() => setForecastType("long")}
+            className={`flex items-center gap-2 rounded-sm px-4 py-2 font-sans text-xs font-semibold transition-colors ${
+              forecastType === "long"
+                ? "bg-accent text-accent-foreground shadow-sm"
+                : "text-text-secondary hover:text-text-primary"
+            }`}
+          >
+            <Calendar className="h-4 w-4" />
+            <span>Seasonal Outlook (1m – 7m)</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Control Strip */}
+      <div className="mt-6 flex flex-wrap items-center justify-between gap-4 border-b border-border-subtle pb-4">
         {/* Station Selector */}
         <div className="flex items-center gap-2">
           <MapPin className="h-4 w-4 text-accent" />
@@ -197,127 +228,96 @@ export default function ForecastPage() {
             ))}
           </select>
         </div>
-      </div>
 
-      {/* Forecast Paradigm Mode Switcher */}
-      <div className="mt-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-border-subtle pb-4">
-        {/* Toggle between Short and Long Range */}
-        <div className="flex items-center gap-2">
-          <span className="text-xs uppercase text-text-muted font-sans tracking-wider">Paradigm:</span>
-          <div className="inline-flex rounded-sm border border-border bg-surface-elevated p-1">
-            <button
-              onClick={() => setForecastType("short")}
-              className={`rounded-sm px-4 py-1.5 font-sans text-xs font-semibold transition-colors ${
-                forecastType === "short"
-                  ? "bg-accent text-accent-foreground shadow-sm"
-                  : "text-text-secondary hover:text-text-primary"
-              }`}
-            >
-              Short-Term (12–72 Hours)
-            </button>
-            <button
-              onClick={() => setForecastType("long")}
-              className={`rounded-sm px-4 py-1.5 font-sans text-xs font-semibold transition-colors ${
-                forecastType === "long"
-                  ? "bg-accent text-accent-foreground shadow-sm"
-                  : "text-text-secondary hover:text-text-primary"
-              }`}
-            >
-              Long-Range Outlook (1–7 Months)
-            </button>
-          </div>
-        </div>
-
-        {/* Specific Horizon Buttons */}
-        <div className="flex items-center gap-1.5">
-          <span className="text-xs text-text-muted font-sans mr-1">Horizon:</span>
+        {/* Horizon Switchers */}
+        <div className="flex items-center gap-4">
           {forecastType === "short" ? (
-            SHORT_HORIZONS.map((h) => (
-              <button
-                key={h}
-                onClick={() => setShortHorizon(h)}
-                className={`rounded-sm px-3 py-1 font-mono text-xs transition-colors ${
-                  shortHorizon === h
-                    ? "border border-accent bg-surface-elevated text-accent font-bold"
-                    : "border border-border-subtle bg-surface hover:bg-surface-elevated text-text-secondary"
-                }`}
-              >
-                {h}
-              </button>
-            ))
+            <div className="flex items-center gap-1.5 text-xs font-sans">
+              <span className="text-text-muted mr-1">Forecast Horizon:</span>
+              {SHORT_HORIZONS.map((h) => (
+                <button
+                  key={h}
+                  onClick={() => setShortHorizon(h)}
+                  className={`rounded-sm px-3 py-1 font-mono transition-colors ${
+                    shortHorizon === h
+                      ? "border border-accent bg-surface-elevated text-accent font-bold"
+                      : "border border-border-subtle bg-surface hover:bg-surface-elevated text-text-secondary"
+                  }`}
+                >
+                  {h}
+                </button>
+              ))}
+            </div>
           ) : (
-            LONG_HORIZONS.map((h) => (
+            <div className="flex items-center gap-1.5 text-xs font-sans">
+              <span className="text-text-muted mr-1">Ensemble Horizon:</span>
+              {LONG_HORIZONS.map((h) => (
+                <button
+                  key={h}
+                  onClick={() => setLongHorizon(h)}
+                  className={`rounded-sm px-3 py-1 font-mono transition-colors ${
+                    longHorizon === h
+                      ? "border border-accent bg-surface-elevated text-accent font-bold"
+                      : "border border-border-subtle bg-surface hover:bg-surface-elevated text-text-secondary"
+                  }`}
+                >
+                  {h}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Pollutant Tabs */}
+          <div className="inline-flex rounded-sm border border-border bg-surface-elevated p-1">
+            {["PM2.5", "PM10", "NO2", "AQI"].map((pol) => (
               <button
-                key={h}
-                onClick={() => setLongHorizon(h)}
-                className={`rounded-sm px-2.5 py-1 font-mono text-xs transition-colors ${
-                  longHorizon === h
-                    ? "border border-accent bg-surface-elevated text-accent font-bold"
-                    : "border border-border-subtle bg-surface hover:bg-surface-elevated text-text-secondary"
+                key={pol}
+                onClick={() => setSelectedPollutant(pol)}
+                className={`rounded-sm px-3 py-1 font-mono text-xs font-semibold transition-colors ${
+                  selectedPollutant === pol
+                    ? "bg-accent text-accent-foreground shadow-sm"
+                    : "text-text-secondary hover:text-text-primary"
                 }`}
               >
-                {h.toUpperCase()}
+                {pol}
               </button>
-            ))
-          )}
+            ))}
+          </div>
         </div>
       </div>
 
-      {/* Mandatory Scientific Constraint Notice */}
-      {forecastType === "long" && (
-        <div className="mt-4 flex items-start gap-3 border-l-2 border-warning bg-surface-elevated/70 p-4 text-xs">
-          <ShieldAlert className="h-5 w-5 shrink-0 text-warning mt-0.5" />
-          <div className="space-y-1">
-            <strong className="text-warning font-sans font-semibold uppercase tracking-wider text-[11px]">
-              Separate Model Architecture &bull; Scientific Limitation Notice
-            </strong>
-            <p className="text-text-secondary leading-relaxed font-sans">
-              The foundational research paper (<em>Architectural Blueprint for Predictive Air Quality Intelligence</em>) specifically demonstrates and validates <strong>short-term forecasts at approximately 12–72 hours</strong>. It does <strong>not</strong> claim or prove 7-month forecasting accuracy. The 1–7 month projection displayed below is an independently developed statistical seasonal ensemble with progressive uncertainty intervals. It must be interpreted as a climate tendency baseline, not a deterministic guarantee.
-            </p>
-          </div>
-        </div>
-      )}
-
-      {/* Forecast Chart Panel */}
-      <div className="mt-6 border border-border bg-surface-elevated p-6 shadow-elevation">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-border-subtle pb-4">
+      {/* Main Chart Card */}
+      <div className="mt-8 border border-border bg-surface-elevated p-6 shadow-elevation">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-border-subtle pb-4">
           <div>
-            <div className="text-xs text-text-muted font-sans">
-              {forecastType === "short" ? shortResult.modelArchitecture : longResult.modelArchitecture}
+            <div className="text-xs text-text-muted font-sans uppercase tracking-wider">
+              {forecastType === "short" ? "Deterministic Short-Range Horizon" : "Statistical Seasonal Trajectory"}
             </div>
             <h2 className="mt-0.5 font-display text-xl font-bold text-text-primary">
-              {forecastType === "short"
-                ? `${selectedPollutant} Projection over ${shortHorizon} Horizon`
-                : `${selectedPollutant} Climatological Trend over ${longMonthsCount}-Month Horizon`}
+              {selectedStation.name} &bull; {selectedPollutant} {forecastType === "short" ? shortHorizon : `${longMonthsCount}-Month`} Projection
             </h2>
           </div>
 
-          <div className="flex flex-wrap items-center gap-4 text-xs">
-            {forecastType === "long" && (
-              <div className="flex items-center gap-1.5">
-                <span className="h-2 w-3 rounded-sm bg-text-muted inline-block" />
-                <span className="text-text-muted font-sans">Observed History</span>
-              </div>
-            )}
+          <div className="flex items-center gap-4 text-xs font-sans">
             <div className="flex items-center gap-1.5">
               <span className="h-2 w-3 rounded-sm bg-accent inline-block" />
-              <span className="text-text-secondary font-sans">Model Prediction</span>
+              <span className="text-text-secondary">Predicted Trajectory</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="h-2 w-3 rounded-sm bg-accent/20 border border-accent/40 inline-block" />
+              <span className="text-text-secondary">95% Uncertainty Bound</span>
             </div>
             {forecastType === "long" && (
               <div className="flex items-center gap-1.5">
-                <span className="h-0.5 w-4 border-b border-dashed border-data-weather inline-block" />
-                <span className="text-data-weather font-sans">Climatological Mean</span>
+                <span className="h-0.5 w-3 border-b border-dashed border-[#82b8c5] inline-block" />
+                <span className="text-text-secondary">Climatological Mean</span>
               </div>
             )}
-            <div className="flex items-center gap-1.5">
-              <span className="h-2 w-3 rounded-sm bg-accent/20 border border-accent/40 inline-block" />
-              <span className="text-text-muted font-sans">95% Uncertainty Ribbon</span>
-            </div>
           </div>
         </div>
 
-        {/* The Recharts Container */}
-        <div className="mt-6 h-[420px] w-full">
+        {/* Chart View */}
+        <div className="mt-6 h-[400px] w-full">
           <ResponsiveContainer width="100%" height="100%">
             <ComposedChart data={chartData} margin={{ top: 15, right: 35, left: 15, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#292d29" vertical={false} />
@@ -335,12 +335,12 @@ export default function ForecastPage() {
                         <div className="mt-1 text-accent font-mono font-bold">
                           {data.isHistorical ? "Observed" : "Predicted"} {selectedPollutant}: {data.predicted} µg/m³
                         </div>
-                        {data.climatology && (
+                        {data.climatology != null && (
                           <div className="text-data-weather font-mono text-[11px]">
                             Climatological Norm: {data.climatology} µg/m³
                           </div>
                         )}
-                        {data.lower95 !== undefined && (
+                        {data.lower95 != null && (
                           <div className="text-text-muted font-mono text-[11px]">
                             95% Confidence: [{data.lower95}, {data.upper95}] µg/m³
                           </div>
@@ -360,14 +360,12 @@ export default function ForecastPage() {
                   return null;
                 }}
               />
-              {/* National Standard Line */}
               <ReferenceLine
                 y={60}
                 stroke="#86a98a"
                 strokeDasharray="4 4"
                 label={{ value: "NAAQ Standard 60", fill: "#86a98a", fontSize: 10, position: "insideTopRight" }}
               />
-              {/* Severe Threshold */}
               <ReferenceLine
                 y={250}
                 stroke="#b95342"
@@ -375,7 +373,7 @@ export default function ForecastPage() {
                 label={{ value: "Severe 250", fill: "#b95342", fontSize: 10, position: "insideTopRight" }}
               />
 
-              {/* Upper & Lower Confidence Envelopes */}
+              {/* Uncertainty Interval Area */}
               <Area type="monotone" dataKey="upper95" stroke="none" fill="#c76b45" fillOpacity={0.14} />
               <Area type="monotone" dataKey="lower95" stroke="none" fill="#181a18" fillOpacity={1.0} />
 
@@ -411,7 +409,7 @@ export default function ForecastPage() {
               Chronological MAE
             </div>
             <div className="text-sm font-mono font-bold text-text-primary mt-0.5">
-              {forecastType === "short" ? `${shortResult.validationPerformance.mae} µg/m³` : "18.5 – 47.5 µg/m³"}
+              No validation set
             </div>
           </div>
           <div>
@@ -419,23 +417,23 @@ export default function ForecastPage() {
               Test Set RMSE
             </div>
             <div className="text-sm font-mono font-bold text-text-primary mt-0.5">
-              {forecastType === "short" ? `${shortResult.validationPerformance.rmse} µg/m³` : "24.2 – 62.9 µg/m³"}
+              No validation set
             </div>
           </div>
           <div>
             <div className="text-text-muted uppercase tracking-wider text-[10px]">
-              {forecastType === "short" ? "Skill vs Persistence" : "Skill vs Climatology"}
+              Skill Score
             </div>
             <div className="text-sm font-mono font-bold text-accent mt-0.5">
-              {forecastType === "short" ? `${shortResult.validationPerformance.skillScoreVsPersistence}` : "+0.38 to +0.04"}
+              No validation set
             </div>
           </div>
           <div>
             <div className="text-text-muted uppercase tracking-wider text-[10px]">
-              Confidence Coverage
+              Validation Status
             </div>
             <div className="text-sm font-mono font-bold text-text-primary mt-0.5">
-              {forecastType === "short" ? `${shortResult.validationPerformance.picp95}% PICP` : "Widening ±1σ & ±2σ"}
+              Benchmark Pending
             </div>
           </div>
         </div>

@@ -29,20 +29,20 @@ export interface Observation {
   us_aqi?: number;
   us_category?: string;
   dominantPollutant: string;
-  dataQuality: "validated" | "raw" | "flagged" | "synthetic";
+  dataQuality: "simulated" | "raw" | "flagged" | "synthetic" | "estimated";
   meteorology: {
-    temp_c: number;
-    rh_pct: number;
-    wind_speed_ms: number;
-    wind_dir_deg: number;
-    pblh_m: number;
-    inversion_strength_c100m: number;
-    solar_rad_wm2: number;
+    temp_c: number | null;
+    rh_pct: number | null;
+    wind_speed_ms: number | null;
+    wind_dir_deg: number | null;
+    pblh_m: number | null;
+    inversion_strength_c100m: number | null;
+    solar_rad_wm2: number | null;
   };
   satellite: {
-    tropomi_aai: number;
-    aod_550nm: number;
-    tropomi_no2_column_umol_m2: number;
+    tropomi_aai: number | null;
+    aod_550nm: number | null;
+    tropomi_no2_column_umol_m2: number | null;
   };
 }
 
@@ -57,8 +57,8 @@ export interface HistoricalRecord {
   co: number;
   o3: number;
   aqi: number;
-  pblh_m: number;
-  wind_speed_ms: number;
+  pblh_m: number | null;
+  wind_speed_ms: number | null;
   events?: string[];
 }
 
