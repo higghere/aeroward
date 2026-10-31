@@ -113,3 +113,37 @@ export function calculateUSAQI(pm25: number): { usAqi: number; usCategory: strin
 
   return { usAqi: aqi, usCategory };
 }
+
+export function convertUSAQIToPM25(aqi: number): number {
+  if (aqi <= 0) return 0;
+  if (aqi <= 50) {
+    return Number(((aqi / 50) * 12.0).toFixed(1));
+  } else if (aqi <= 100) {
+    return Number((12.1 + ((aqi - 51) / (100 - 51)) * (35.4 - 12.1)).toFixed(1));
+  } else if (aqi <= 150) {
+    return Number((35.5 + ((aqi - 101) / (150 - 101)) * (55.4 - 35.5)).toFixed(1));
+  } else if (aqi <= 200) {
+    return Number((55.5 + ((aqi - 151) / (200 - 151)) * (150.4 - 55.5)).toFixed(1));
+  } else if (aqi <= 300) {
+    return Number((150.5 + ((aqi - 201) / (300 - 201)) * (250.4 - 150.5)).toFixed(1));
+  } else {
+    return Number((250.5 + ((Math.min(500, aqi) - 301) / (500 - 301)) * (500.4 - 250.5)).toFixed(1));
+  }
+}
+
+export function convertUSAQIToPM10(aqi: number): number {
+  if (aqi <= 0) return 0;
+  if (aqi <= 50) {
+    return Number(((aqi / 50) * 54.0).toFixed(1));
+  } else if (aqi <= 100) {
+    return Number((55.0 + ((aqi - 51) / (100 - 51)) * (154.0 - 55.0)).toFixed(1));
+  } else if (aqi <= 150) {
+    return Number((155.0 + ((aqi - 101) / (150 - 101)) * (254.0 - 155.0)).toFixed(1));
+  } else if (aqi <= 200) {
+    return Number((255.0 + ((aqi - 151) / (200 - 151)) * (354.0 - 255.0)).toFixed(1));
+  } else if (aqi <= 300) {
+    return Number((355.0 + ((aqi - 201) / (300 - 201)) * (424.0 - 355.0)).toFixed(1));
+  } else {
+    return Number((425.0 + ((Math.min(500, aqi) - 301) / (500 - 301)) * (604.0 - 425.0)).toFixed(1));
+  }
+}

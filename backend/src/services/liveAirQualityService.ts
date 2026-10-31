@@ -1,5 +1,5 @@
 import { Station, Observation } from "../repositories/dataStore.js";
-import { calculateAQI, calculateUSAQI } from "../utils/aqi.js";
+import { calculateAQI, calculateUSAQI, convertUSAQIToPM25, convertUSAQIToPM10 } from "../utils/aqi.js";
 import { observationRepository } from "../repositories/observationRepository.js";
 import { config } from "../config/index.js";
 
@@ -61,20 +61,20 @@ export class LiveAirQualityService {
 
           // Only accept fresh telemetry from active monitors (reject offline stations frozen months ago)
           if (ageHours <= 24) {
-            const aqi = d.aqi;
-            const pm25 = Math.round(d.iaqi?.pm25?.v || (aqi > 50 ? aqi * 0.7 : 25));
-            const pm10 = Math.round(d.iaqi?.pm10?.v || pm25 * 1.5);
+            const rawUsAqi = typeof d.aqi === "number" ? d.aqi : 50;
+            const rawPm25Aqi = d.iaqi?.pm25?.v ?? rawUsAqi;
+            const rawPm10Aqi = d.iaqi?.pm10?.v ?? Math.round(rawPm25Aqi * 0.85);
+
+            // Convert WAQI's Individual AQI (US EPA scale) back into physical concentration in µg/m³
+            const pm25 = Math.round(convertUSAQIToPM25(rawPm25Aqi));
+            const pm10 = Math.round(convertUSAQIToPM10(rawPm10Aqi));
             const no2 = Math.round(d.iaqi?.no2?.v || 28);
             const so2 = Math.round(d.iaqi?.so2?.v || 12);
             const co = Number((d.iaqi?.co?.v || 1.35).toFixed(2));
             const o3 = Math.round(d.iaqi?.o3?.v || 45);
 
-            let category = "Good";
-            if (aqi > 400) category = "Severe";
-            else if (aqi > 300) category = "Very Poor";
-            else if (aqi > 200) category = "Poor";
-            else if (aqi > 100) category = "Moderate";
-            else if (aqi > 50) category = "Satisfactory";
+            // Calculate authentic Indian CPCB NAQI from physical concentrations
+            const aqiResult = calculateAQI({ pm25, pm10, no2, so2, co, o3 });
 
             const domRaw = (d.dominentpol || "pm25").toLowerCase();
             const dominantPollutant = domRaw.includes("pm25")
@@ -99,8 +99,8 @@ export class LiveAirQualityService {
               so2,
               co,
               o3,
-              aqi,
-              category,
+              aqi: aqiResult.aqi,
+              category: aqiResult.category,
               us_aqi: usa.usAqi,
               us_category: usa.usCategory,
               dominantPollutant,

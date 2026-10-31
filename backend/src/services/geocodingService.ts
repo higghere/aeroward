@@ -141,7 +141,8 @@ export class GeocodingService {
     // 2. High-speed, keyless, rate-limit-free Photon API by Komoot
     try {
       const photonRes = await fetch(
-        `https://photon.komoot.io/api/?q=${encodeURIComponent(clean)}&limit=1`
+        `https://photon.komoot.io/api/?q=${encodeURIComponent(clean)}&limit=1`,
+        { signal: AbortSignal.timeout(3000) }
       );
       if (photonRes.ok) {
         const pData = (await photonRes.json()) as any;
@@ -175,7 +176,10 @@ export class GeocodingService {
     try {
       const nomRes = await fetch(
         `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(clean)}&format=json&addressdetails=1&limit=1`,
-        { headers: { "User-Agent": "AeroWard-Intelligence-Geocoder-Engine/2.0" } }
+        {
+          headers: { "User-Agent": "AeroWard-Intelligence-Geocoder-Engine/2.0" },
+          signal: AbortSignal.timeout(3000),
+        }
       );
       if (nomRes.ok) {
         const nomData = (await nomRes.json()) as any[];
