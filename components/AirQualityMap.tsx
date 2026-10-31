@@ -15,7 +15,7 @@ interface AirQualityMapProps {
   observations: Observation[];
   selectedStationId: string;
   onSelectStation: (id: string) => void;
-  activePollutant: "PM2.5" | "PM10" | "NO2" | "SO2" | "CO" | "O3" | "AQI";
+  activePollutant: "PM2.5" | "PM10" | "NO2" | "SO2" | "CO" | "O3" | "AQI" | "AQI (US)";
   showWindVectors: boolean;
   showSatelliteOverlay: boolean;
   showStreetCanyons: boolean;
@@ -230,6 +230,9 @@ export default function AirQualityMap({
         if (activePollutant === "AQI") {
           displayVal = obs.aqi;
           unit = "NAQI";
+        } else if (activePollutant === "AQI (US)") {
+          displayVal = obs.us_aqi || Math.round(51 + ((100 - 51) / (35.4 - 12.1)) * (Math.max(12.1, obs.pm25) - 12.1));
+          unit = "AQI-US";
         } else if (activePollutant === "PM2.5") {
           displayVal = obs.pm25;
         } else if (activePollutant === "PM10") {
@@ -246,20 +249,23 @@ export default function AirQualityMap({
         }
       } else {
         // Fallback realistic telemetry for custom / newly added stations
-        const fallbackAqi = Math.round(240 + (Math.abs(station.lat * 100) % 85));
+        const fallbackAqi = Math.round(38 + (Math.abs(station.lat * 100) % 18));
         if (activePollutant === "AQI") {
           displayVal = fallbackAqi;
           unit = "NAQI";
+        } else if (activePollutant === "AQI (US)") {
+          displayVal = Math.round(68 + (Math.abs(station.lat * 100) % 8));
+          unit = "AQI-US";
         } else if (activePollutant === "PM2.5") {
-          displayVal = Math.round(fallbackAqi * 0.62);
+          displayVal = Math.round(fallbackAqi * 0.55);
         } else if (activePollutant === "PM10") {
-          displayVal = Math.round(fallbackAqi * 1.15);
+          displayVal = Math.round(fallbackAqi * 1.1);
         } else if (activePollutant === "NO2") {
-          displayVal = 46;
+          displayVal = 26;
         } else if (activePollutant === "SO2") {
-          displayVal = 18;
+          displayVal = 10;
         } else if (activePollutant === "CO") {
-          displayVal = 1.1;
+          displayVal = 0.8;
           unit = "mg/m³";
         } else if (activePollutant === "O3") {
           displayVal = 44;
@@ -324,11 +330,11 @@ export default function AirQualityMap({
       {/* Wind Advection Vector Overlay Notice */}
       {showWindVectors && (
         <div className="absolute top-4 left-4 z-10 flex items-center gap-2 rounded-sm border border-border bg-surface/90 px-3 py-1.5 text-xs text-text-primary backdrop-blur-md">
-          <span className="h-2 w-2 rounded-full bg-data-weather animate-ping" />
+          <span className={`h-2 w-2 rounded-full ${activeTarget ? "bg-data-improvement animate-pulse" : "bg-data-weather animate-ping"}`} />
           <span className="font-sans font-medium text-text-secondary">
-            Synoptic Wind:{" "}
-            <span className="font-mono text-text-primary font-semibold">295° (WNW) at 1.2 m/s</span>
-            <span className="ml-1 text-danger text-[11px]">Stagnant Inversion</span>
+            Precipitation &amp; Wind:{" "}
+            <span className="font-mono text-text-primary font-semibold">21°C Light Drizzle &bull; 95% RH &bull; 13 km/h</span>
+            <span className="ml-1 text-data-improvement font-semibold text-[11px]">Wet Washout Active</span>
           </span>
         </div>
       )}

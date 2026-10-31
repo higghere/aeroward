@@ -9,9 +9,9 @@ import { meteorologyService } from "../analysis/meteorologyService.js";
 import { mitigationService } from "../recommendations/mitigationService.js";
 import { routingEngine } from "../geospatial/routingEngine.js";
 import { scenarioEngine } from "../scenarios/scenarioEngine.js";
-import { DATA_SOURCES_REGISTRY } from "../repositories/dataStore.js";
+import { DATA_SOURCES_REGISTRY, Observation } from "../repositories/dataStore.js";
 import { liveAirQualityService } from "../services/liveAirQualityService.js";
-import { geocodingService } from "../services/geocodingService.js";
+import { geocodingService, CITY_GEO_INDEX } from "../services/geocodingService.js";
 import {
   LocationQuerySchema,
   HistoryQuerySchema,
@@ -93,45 +93,92 @@ export class AirQualityController {
 
   async searchPlaces(req: FastifyRequest, reply: FastifyReply) {
     const query = req.query as any;
-    const input = query.input || "";
-    if (!input || input.trim().length < 2) {
+    const input = (query.input || "").trim();
+    if (!input || input.length < 2) {
       return reply.send({ suggestions: [] });
     }
 
     const apiKey = config.GOOGLE_MAPS_API_KEY;
-    if (!apiKey) {
-      return reply.send({ suggestions: [] });
-    }
+    if (apiKey) {
+      try {
+        const googleRes = await fetch("https://places.googleapis.com/v1/places:autocomplete", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": apiKey,
+          },
+          body: JSON.stringify({
+            input,
+            includedRegionCodes: ["in"],
+          }),
+        });
 
-    try {
-      const googleRes = await fetch("https://places.googleapis.com/v1/places:autocomplete", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Goog-Api-Key": apiKey,
-        },
-        body: JSON.stringify({
-          input: input.trim(),
-          includedRegionCodes: ["in"],
-        }),
-      });
-
-      if (!googleRes.ok) {
-        return reply.send({ suggestions: [] });
+        if (googleRes.ok) {
+          const data = (await googleRes.json()) as any;
+          const rawSuggestions = data.suggestions || [];
+          if (rawSuggestions.length > 0) {
+            const suggestions = rawSuggestions.map((s: any) => ({
+              placeId: s.placePrediction?.placeId,
+              name: s.placePrediction?.structuredFormat?.mainText?.text || s.placePrediction?.text?.text,
+              formattedAddress: s.placePrediction?.text?.text,
+            }));
+            return reply.send({ suggestions });
+          }
+        }
+      } catch (err) {
+        // Fallback to local index
       }
-
-      const data = (await googleRes.json()) as any;
-      const rawSuggestions = data.suggestions || [];
-      const suggestions = rawSuggestions.map((s: any) => ({
-        placeId: s.placePrediction?.placeId,
-        name: s.placePrediction?.structuredFormat?.mainText?.text || s.placePrediction?.text?.text,
-        formattedAddress: s.placePrediction?.text?.text,
-      }));
-
-      return reply.send({ suggestions });
-    } catch (err) {
-      return reply.send({ suggestions: [] });
     }
+
+    // High-performance fallback: local geospatial index & Komoot Photon
+    const queryLower = input.toLowerCase();
+    const suggestions: any[] = [];
+
+    for (const [key, val] of Object.entries(CITY_GEO_INDEX)) {
+      if (key.includes(queryLower) || val.city.toLowerCase().includes(queryLower) || val.state.toLowerCase().includes(queryLower)) {
+        suggestions.push({
+          placeId: `geo_${key}`,
+          name: val.city,
+          formattedAddress: `${val.city}, ${val.state}, ${val.country}`,
+        });
+        if (suggestions.length >= 5) break;
+      }
+    }
+
+    if (suggestions.length > 0) {
+      return reply.send({ suggestions });
+    }
+
+    // Try Photon OpenStreetMap
+    try {
+      const photonRes = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(input)}&limit=5`);
+      if (photonRes.ok) {
+        const pData = (await photonRes.json()) as any;
+        const features = pData.features || [];
+        const pMatches = features.map((f: any, idx: number) => {
+          const p = f.properties || {};
+          const label = [p.name, p.city, p.state, p.country].filter(Boolean).join(", ");
+          return {
+            placeId: `geo_${p.city?.toLowerCase() || p.name?.toLowerCase() || idx}`,
+            name: p.name || p.city || input,
+            formattedAddress: label || `${input}, India`,
+          };
+        });
+        if (pMatches.length > 0) {
+          return reply.send({ suggestions: pMatches });
+        }
+      }
+    } catch {}
+
+    return reply.send({
+      suggestions: [
+        {
+          placeId: `geo_${encodeURIComponent(input.toLowerCase())}`,
+          name: input,
+          formattedAddress: `${input}, India`,
+        },
+      ],
+    });
   }
 
   async getPlaceDetails(req: FastifyRequest, reply: FastifyReply) {
@@ -184,12 +231,12 @@ export class AirQualityController {
     }
 
     // 2. High-precision Geocoding Service (National index + Photon API + Nominatim)
-    const targetString = fallbackQuery || (placeId ? placeId.replace(/[_-]/g, " ") : "India");
+    const targetString = fallbackQuery || (placeId ? placeId.replace(/^geo_/i, "").replace(/[_-]/g, " ").trim() : "India");
     const geo = await geocodingService.resolveLocation(targetString);
 
     return reply.send({
       placeId: placeId || `geo_${Date.now()}`,
-      name: geo.name,
+      name: geo.city || geo.name,
       formattedAddress: geo.formattedAddress,
       lat: geo.lat,
       lng: geo.lng,
@@ -197,6 +244,8 @@ export class AirQualityController {
       state: geo.state,
     });
   }
+
+  private liveCache: { timestamp: number; data: Observation[] } | null = null;
 
   async getCurrent(req: FastifyRequest, reply: FastifyReply) {
     const query = LocationQuerySchema.safeParse(req.query);
@@ -212,8 +261,22 @@ export class AirQualityController {
       return reply.send(obs);
     }
 
-    const all = observationRepository.getAllCurrent();
-    return reply.send({ count: all.length, observations: all });
+    const now = Date.now();
+    if (this.liveCache && now - this.liveCache.timestamp < 30000) {
+      return reply.send({ count: this.liveCache.data.length, observations: this.liveCache.data });
+    }
+
+    try {
+      const stations = await stationRepository.getAll();
+      const liveObs = await Promise.all(
+        stations.map((s) => liveAirQualityService.getLiveObservation(s))
+      );
+      this.liveCache = { timestamp: now, data: liveObs };
+      return reply.send({ count: liveObs.length, observations: liveObs });
+    } catch {
+      const all = observationRepository.getAllCurrent();
+      return reply.send({ count: all.length, observations: all });
+    }
   }
 
   async getMapData(req: FastifyRequest, reply: FastifyReply) {

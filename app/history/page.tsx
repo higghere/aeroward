@@ -50,7 +50,14 @@ export default function HistoryPage() {
       .then((r) => r.json())
       .then((data) => {
         if (data && data.stations && data.stations.length > 0) {
-          setStations(data.stations);
+          try {
+            const stored = localStorage.getItem("aeroward_custom_stations");
+            const parsed = stored ? JSON.parse(stored) : [];
+            const merged = [...parsed, ...data.stations.filter((p: any) => !parsed.some((x: any) => x.id === p.id))];
+            setStations(merged);
+          } catch {
+            setStations(data.stations);
+          }
         }
       })
       .catch((err) => console.warn("Notice: Live station sync in history:", err));

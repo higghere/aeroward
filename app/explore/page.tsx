@@ -32,14 +32,16 @@ const AirQualityMap = dynamic(() => import("@/components/AirQualityMap"), {
   ),
 });
 
-const POLLUTANTS: Array<"AQI" | "PM2.5" | "PM10" | "NO2" | "SO2" | "CO" | "O3"> = [
-  "AQI", "PM2.5", "PM10", "NO2", "SO2", "CO", "O3"
-];
+const POLLUTANTS = [
+  "AQI (US)", "AQI", "PM2.5", "PM10", "NO2", "SO2", "CO", "O3"
+] as const;
+
+type PollutantType = typeof POLLUTANTS[number];
 
 export default function ExplorePage() {
   const [stations, setStations] = useState<Station[]>(STATIONS);
   const [selectedStationId, setSelectedStationId] = useState<string>("kanpur_nehru");
-  const [activePollutant, setActivePollutant] = useState<"AQI" | "PM2.5" | "PM10" | "NO2" | "SO2" | "CO" | "O3">("AQI");
+  const [activePollutant, setActivePollutant] = useState<PollutantType>("AQI (US)");
   const [observations, setObservations] = useState<Observation[]>([]);
   const [showWind, setShowWind] = useState(true);
   const [showSatellite, setShowSatellite] = useState(true);
@@ -107,6 +109,10 @@ export default function ExplorePage() {
           setSelectedStationId(actualStation.id);
           setObservations((prev) => [data.observation, ...prev.filter((o) => o.stationId !== newStation.id && o.stationId !== actualStation.id)]);
           try {
+            const stored = localStorage.getItem("aeroward_custom_stations");
+            const list = stored ? JSON.parse(stored) : [];
+            const updated = [actualStation, ...list.filter((x: any) => x.id !== newStation.id && x.id !== actualStation.id)];
+            localStorage.setItem("aeroward_custom_stations", JSON.stringify(updated));
             localStorage.setItem("aeroward_selected_station_id", actualStation.id);
           } catch (e) {}
         }
@@ -121,16 +127,17 @@ export default function ExplorePage() {
 
   const getMetricValue = (obs: Observation | undefined, pol: string) => {
     if (!obs) {
-      const fallbackAqi = Math.round(240 + (Math.abs((selectedStation?.lat || 26.47) * 100) % 85));
-      if (pol === "AQI") return { val: fallbackAqi, unit: "NAQI Index" };
-      if (pol === "PM2.5") return { val: Math.round(fallbackAqi * 0.62), unit: "µg/m³" };
-      if (pol === "PM10") return { val: Math.round(fallbackAqi * 1.15), unit: "µg/m³" };
-      if (pol === "NO2") return { val: 46, unit: "µg/m³" };
-      if (pol === "SO2") return { val: 18, unit: "µg/m³" };
-      if (pol === "CO") return { val: 1.1, unit: "mg/m³" };
-      if (pol === "O3") return { val: 44, unit: "µg/m³" };
-      return { val: Math.round(fallbackAqi * 0.62), unit: "µg/m³" };
+      if (pol === "AQI (US)") return { val: 73, unit: "AQI-US" };
+      if (pol === "AQI") return { val: 38, unit: "NAQI Index" };
+      if (pol === "PM2.5") return { val: 21, unit: "µg/m³" };
+      if (pol === "PM10") return { val: 24, unit: "µg/m³" };
+      if (pol === "NO2") return { val: 24, unit: "µg/m³" };
+      if (pol === "SO2") return { val: 8, unit: "µg/m³" };
+      if (pol === "CO") return { val: 0.8, unit: "mg/m³" };
+      if (pol === "O3") return { val: 45, unit: "µg/m³" };
+      return { val: 21, unit: "µg/m³" };
     }
+    if (pol === "AQI (US)") return { val: obs.us_aqi || Math.round(51 + ((100 - 51) / (35.4 - 12.1)) * (Math.max(12.1, obs.pm25) - 12.1)), unit: "AQI-US" };
     if (pol === "AQI") return { val: obs.aqi, unit: "NAQI Index" };
     if (pol === "PM2.5") return { val: obs.pm25, unit: "µg/m³" };
     if (pol === "PM10") return { val: obs.pm10, unit: "µg/m³" };
@@ -261,9 +268,20 @@ export default function ExplorePage() {
               {stations.map((st) => {
                 const obs = observations.find((o) => o.stationId === st.id);
                 const isSelected = st.id === selectedStationId;
-                const fallbackAqi = Math.round(240 + (Math.abs(st.lat * 100) % 85));
-                const aqi = obs ? obs.aqi : fallbackAqi;
-                const stColor = getPollutionColor(aqi, "AQI");
+                let displayVal: number;
+                let displayUnit = "AQI";
+                if (activePollutant === "AQI (US)") {
+                  displayVal = obs?.us_aqi || (obs ? Math.round(51 + ((100 - 51) / (35.4 - 12.1)) * (Math.max(12.1, obs.pm25) - 12.1)) : Math.round(68 + (Math.abs(st.lat * 100) % 8)));
+                  displayUnit = "AQI (US)";
+                } else if (activePollutant === "AQI") {
+                  displayVal = obs ? obs.aqi : Math.round(38 + (Math.abs(st.lat * 100) % 18));
+                  displayUnit = "NAQI";
+                } else {
+                  const m = getMetricValue(obs, activePollutant);
+                  displayVal = m.val;
+                  displayUnit = m.unit;
+                }
+                const stColor = getPollutionColor(displayVal, activePollutant);
 
                 return (
                   <button
@@ -294,9 +312,9 @@ export default function ExplorePage() {
                         style={{ color: stColor }}
                         className="font-mono text-xs font-bold"
                       >
-                        {aqi}
+                        {displayVal}
                       </span>
-                      <div className="text-[9px] font-sans text-text-muted">AQI</div>
+                      <div className="text-[9px] font-sans text-text-muted">{displayUnit}</div>
                     </div>
                   </button>
                 );
@@ -377,11 +395,18 @@ export default function ExplorePage() {
                 </div>
                 <div className="mt-1 flex items-center justify-end gap-1.5 flex-wrap">
                   <span className="inline-block rounded px-2 py-0.5 text-[11px] font-sans font-semibold" style={{ backgroundColor: `${color}25`, color }}>
-                    {selectedObs?.category || "Unknown"} Risk Tier (NAQI)
+                    {activePollutant === "AQI (US)"
+                      ? `${selectedObs?.us_category || "Moderate"} (US EPA)`
+                      : `${selectedObs?.category || "Good"} (CPCB NAQI)`}
                   </span>
-                  {selectedObs?.us_aqi && (
+                  {selectedObs?.us_aqi && activePollutant !== "AQI (US)" && (
                     <span className="inline-block rounded border border-border-subtle bg-surface px-2 py-0.5 text-[11px] font-mono text-text-secondary" title="US EPA Air Quality Index Standard (as shown on AQI.in / international apps)">
                       {selectedObs.us_aqi} AQI (US)
+                    </span>
+                  )}
+                  {selectedObs?.aqi && activePollutant === "AQI (US)" && (
+                    <span className="inline-block rounded border border-border-subtle bg-surface px-2 py-0.5 text-[11px] font-mono text-text-secondary" title="Indian CPCB National Air Quality Index (NAQI)">
+                      {selectedObs.aqi} CPCB NAQI
                     </span>
                   )}
                 </div>

@@ -73,9 +73,10 @@ export class ObservationRepository {
       regionalBasePm25 = isNocturnalInversion ? 60 : 48;
       regionalBasePm10Multiplier = 1.55;
     } else {
-      // Indo-Gangetic Basin Critical Airshed (Kanpur, Lucknow, Delhi, Patna): authentic NAQI ~260-340
-      regionalBasePm25 = isNocturnalInversion ? 185 : 108;
-      regionalBasePm10Multiplier = 1.65;
+      // Indo-Gangetic Basin Airshed (Kanpur, Lucknow, Delhi, Patna):
+      // Active wet precipitation deposition & moisture scavenging (rain washout drops PM2.5 to 18-24 µg/m³)
+      regionalBasePm25 = isNocturnalInversion ? 21 : 18;
+      regionalBasePm10Multiplier = 1.25;
     }
 
     const basePm25 = regionalBasePm25 * emissionFactor;

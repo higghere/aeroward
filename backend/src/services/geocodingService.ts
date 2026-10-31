@@ -9,7 +9,7 @@ export interface GeocodedLocation {
 }
 
 // Comprehensive in-memory geospatial index for all Indian state capitals, tier-1/2/3 cities, and global hubs
-const CITY_GEO_INDEX: Record<string, { lat: number; lng: number; city: string; state: string; country: string }> = {
+export const CITY_GEO_INDEX: Record<string, { lat: number; lng: number; city: string; state: string; country: string }> = {
   // Uttar Pradesh & Indo-Gangetic Basin
   agra: { lat: 27.1767, lng: 78.0081, city: "Agra", state: "Uttar Pradesh", country: "India" },
   kanpur: { lat: 26.4499, lng: 80.3319, city: "Kanpur", state: "Uttar Pradesh", country: "India" },

@@ -30,12 +30,11 @@ export function getCssVariable(varName: string, fallback: string): string {
 }
 
 export function getPollutionColor(aqiOrVal: number, pollutant: string = "AQI"): string {
-  if (pollutant === "AQI") {
+  if (pollutant === "AQI" || pollutant === "AQI (US)" || pollutant === "AQI_US") {
     if (aqiOrVal <= 50) return THEME.pollutionLow;
-    if (aqiOrVal <= 100) return "#a6bf82";
-    if (aqiOrVal <= 200) return THEME.pollutionModerate;
-    if (aqiOrVal <= 300) return THEME.pollutionHigh;
-    if (aqiOrVal <= 400) return "#cc6a4c";
+    if (aqiOrVal <= 100) return THEME.pollutionModerate;
+    if (aqiOrVal <= 200) return THEME.pollutionHigh;
+    if (aqiOrVal <= 300) return "#cc6a4c";
     return THEME.pollutionSevere;
   }
   // PM2.5
